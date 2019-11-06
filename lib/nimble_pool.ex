@@ -8,7 +8,7 @@ defmodule NimblePool do
   @type user_reason :: term
 
   @callback init(term) ::
-              {:ok, server_state}
+              {:ok, server_state} | {:async, (-> server_state)}
 
   @callback handle_checkout(from, server_state) ::
               {:ok, client_state, server_state} | {:remove, user_reason}
@@ -16,7 +16,7 @@ defmodule NimblePool do
   @callback handle_checkin(client_state, from, server_state) ::
               {:ok, server_state} | {:remove, user_reason}
 
-  @callback handle_info(from, server_state) ::
+  @callback handle_info(message :: term, server_state) ::
               {:ok, server_state} | {:remove, user_reason}
 
   @callback terminate(:timeout | :down | :throw | :error | :exit | user_reason, server_state) ::
@@ -39,7 +39,7 @@ defmodule NimblePool do
 
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
-    {pool_size, opts} = Keyword.pop(opts, :pool_size)
+    {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -50,6 +50,10 @@ defmodule NimblePool do
     end
 
     GenServer.start_link(__MODULE__, {worker, arg, pool_size}, opts)
+  end
+
+  def stop(server, reason \\ :normal, timeout \\ :infinity) do
+    GenServer.stop(server, reason, timeout)
   end
 
   def checkout!(pool, fun, timeout \\ 5_000) do
@@ -124,7 +128,7 @@ defmodule NimblePool do
   def init({worker, arg, pool_size}) do
     Process.flag(:trap_exit, true)
 
-    resources =
+    {resources, async} =
       Enum.reduce(1..pool_size, {:queue.new(), %{}}, fn _, {resources, async} ->
         init_worker(worker, arg, resources, async)
       end)
@@ -136,7 +140,7 @@ defmodule NimblePool do
       queue: :queue.new(),
       requests: %{},
       monitors: %{},
-      async: %{}
+      async: async
     }
 
     {:ok, state}
@@ -174,7 +178,7 @@ defmodule NimblePool do
               {:queue.in(worker_server_state, resources), async}
 
             {:remove, reason} ->
-              maybe_terminate(reason, worker_server_state, resources, async, state)
+              remove(reason, worker_server_state, resources, async, state)
           end
 
         Process.demonitor(mon_ref, [:flush])
@@ -248,6 +252,15 @@ defmodule NimblePool do
     maybe_handle_info(msg, state)
   end
 
+  @impl true
+  def terminate(reason, %{worker: worker, resources: resources} = state) do
+    for worker_server_state <- :queue.to_list(resources) do
+      maybe_terminate(worker, reason, worker_server_state)
+    end
+
+    :ok
+  end
+
   defp remove_async_ref(ref, state) do
     %{async: async, resources: resources, worker: worker, arg: arg} = state
     {resources, async} = init_worker(worker, arg, resources, Map.delete(async, ref))
@@ -270,7 +283,7 @@ defmodule NimblePool do
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
-        {resources, async} = maybe_terminate(reason, worker_server_state, resources, async, state)
+        {resources, async} = remove(reason, worker_server_state, resources, async, state)
 
         state = %{
           state
@@ -299,7 +312,7 @@ defmodule NimblePool do
                 {:queue.in(worker_server_state, resources), async}
 
               {:remove, reason} ->
-                maybe_terminate(reason, worker_server_state, resources, async, state)
+                remove(reason, worker_server_state, resources, async, state)
             end
         end)
 
@@ -345,7 +358,7 @@ defmodule NimblePool do
 
           {:remove, reason} ->
             {resources, async} =
-              maybe_terminate(reason, worker_server_state, resources, async, state)
+              remove(reason, worker_server_state, resources, async, state)
 
             maybe_checkout(mon_ref, from, %{state | resources: resources, async: async})
         end
@@ -355,14 +368,16 @@ defmodule NimblePool do
     end
   end
 
-  defp maybe_terminate(reason, worker_server_state, resources, async, state) do
+  defp remove(reason, worker_server_state, resources, async, state) do
     %{worker: worker, arg: arg} = state
+    maybe_terminate(worker, reason, worker_server_state)
+    init_worker(worker, arg, resources, async)
+  end
 
+  defp maybe_terminate(worker, reason, worker_server_state) do
     if function_exported?(worker, :terminate, 2) do
       worker.terminate(reason, worker_server_state)
     end
-
-    init_worker(worker, arg, resources, async)
   end
 
   defp init_worker(worker, arg, resources, async) do
