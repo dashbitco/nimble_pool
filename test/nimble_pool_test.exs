@@ -35,59 +35,8 @@ defmodule NimblePoolTest do
     end
   end
 
-  defmodule TestAgent do
-    use Agent
-
-    def start_link(instructions) do
-      Agent.start_link(fn -> instructions end)
-    end
-
-    def next(pid, instruction, args) do
-      Agent.get_and_update(pid, fn
-        [{^instruction, return} | instructions] when is_function(return) ->
-          {apply(return, args), instructions}
-
-        state ->
-          raise "expected #{inspect(instruction)}, state was #{inspect(state)}"
-      end)
-    end
-
-    def instructions(pid) do
-      Agent.get(pid, & &1)
-    end
-  end
-
-  defmodule StatefulPool do
-    @behaviour NimblePool
-
-    def init(pid) do
-      TestAgent.next(pid, :init, [pid])
-    end
-
-    def handle_checkout(from, pid) do
-      TestAgent.next(pid, :handle_checkout, [from, pid])
-    end
-
-    def handle_checkin(client_state, from, pid) do
-      TestAgent.next(pid, :handle_checkin, [client_state, from, pid])
-    end
-
-    def handle_info(message, pid) do
-      TestAgent.next(pid, :handle_info, [message, pid])
-    end
-
-    def terminate(reason, pid) do
-      TestAgent.next(pid, :terminate, [reason, pid])
-    end
-  end
-
   defp stateless_pool!(instructions, opts \\ []) do
     start_pool!(StatelessPool, instructions, opts)
-  end
-
-  defp stateful_pool!(instructions, opts \\ []) do
-    {:ok, agent} = TestAgent.start_link(instructions)
-    {agent, start_pool!(StatefulPool, agent, opts)}
   end
 
   defp start_pool!(worker, arg, opts) do
@@ -97,13 +46,6 @@ defmodule NimblePoolTest do
       {NimblePool, [worker: {worker, arg}] ++ opts},
       restart: :temporary
     )
-  end
-
-  defp assert_drained(agent) do
-    case TestAgent.instructions(agent) do
-      [] -> :ok
-      instructions -> flunk("pending instructions found: #{inspect(instructions)}")
-    end
   end
 
   test "starts the pool with checkout, checkin, and terminate" do
