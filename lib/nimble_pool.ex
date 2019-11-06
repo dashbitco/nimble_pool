@@ -8,7 +8,7 @@ defmodule NimblePool do
   @type user_reason :: term
 
   @callback init(term) ::
-              {:ok, server_state} | {:async, (-> server_state)}
+              {:ok, server_state} | {:async, (() -> server_state)}
 
   @callback handle_checkout(from, server_state) ::
               {:ok, client_state, server_state} | {:remove, user_reason}
@@ -19,7 +19,7 @@ defmodule NimblePool do
   @callback handle_info(message :: term, server_state) ::
               {:ok, server_state} | {:remove, user_reason}
 
-  @callback terminate(:timeout | :down | :throw | :error | :exit | user_reason, server_state) ::
+  @callback terminate(:DOWN | :timeout | :throw | :error | :exit | user_reason, server_state) ::
               :ok
 
   @optional_callbacks handle_info: 2, terminate: 2
@@ -61,7 +61,7 @@ defmodule NimblePool do
     pid = GenServer.whereis(pool)
 
     unless pid do
-      exit(:noproc)
+      exit!(:noproc, :checkout, [pool])
     end
 
     ref = Process.monitor(pid)
@@ -82,16 +82,19 @@ defmodule NimblePool do
         end
 
       {:DOWN, ^ref, _, _, :noconnection} ->
-        exit!({:nodedown, node(pid)}, :checkout, [pid])
+        exit!({:nodedown, get_node(pid)}, :checkout, [pool])
 
       {:DOWN, ^ref, _, _, reason} ->
-        exit!(reason, :checkout, [pid])
+        exit!(reason, :checkout, [pool])
     after
       timeout ->
         send_remove(pid, ref, :timeout)
-        exit!(:timeout, :checkout, [pid])
+        exit!(:timeout, :checkout, [pool])
     end
   end
+
+  defp get_node({_, node}), do: node
+  defp get_node(pid) when is_pid(pid), do: node(pid)
 
   defp send_call(pid, ref, message) do
     # Auto-connect is asynchronous. But we still use :noconnect to make sure
@@ -108,9 +111,15 @@ defmodule NimblePool do
     send_call(pid, ref, {:checkin, worker_client_state})
 
     receive do
-      {^ref, :ok} -> :ok
-      {:DOWN, ^ref, _, _, :noconnection} -> exit!({:nodedown, node(pid)}, :checkin, [pid])
-      {:DOWN, ^ref, _, _, reason} -> exit!(reason, :checkin, [pid])
+      {^ref, :ok} ->
+        Process.demonitor(ref, [:flush])
+        :ok
+
+      {:DOWN, ^ref, _, _, :noconnection} ->
+        exit!({:nodedown, node(pid)}, :checkin, [pid])
+
+      {:DOWN, ^ref, _, _, reason} ->
+        exit!(reason, :checkin, [pid])
     after
       timeout ->
         Process.demonitor(ref, [:flush])
@@ -253,7 +262,7 @@ defmodule NimblePool do
   end
 
   @impl true
-  def terminate(reason, %{worker: worker, resources: resources} = state) do
+  def terminate(reason, %{worker: worker, resources: resources}) do
     for worker_server_state <- :queue.to_list(resources) do
       maybe_terminate(worker, reason, worker_server_state)
     end
@@ -357,9 +366,7 @@ defmodule NimblePool do
             %{state | resources: resources, requests: requests}
 
           {:remove, reason} ->
-            {resources, async} =
-              remove(reason, worker_server_state, resources, async, state)
-
+            {resources, async} = remove(reason, worker_server_state, resources, async, state)
             maybe_checkout(mon_ref, from, %{state | resources: resources, async: async})
         end
 
