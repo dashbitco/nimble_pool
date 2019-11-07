@@ -361,6 +361,48 @@ defmodule NimblePoolTest do
       assert Task.await(task1) == :result
       assert Task.await(task2) == :result
     end
+
+    test "concurrent checkouts" do
+      parent = self()
+
+      pool =
+        stateless_pool!(
+          [
+            init: fn next -> {:ok, next} end,
+            handle_checkout: fn _from, next -> {:ok, :client_state_out, next} end,
+            handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+            terminate: fn _, _ -> :ok end
+          ],
+          pool_size: 2
+        )
+
+      task1 =
+        Task.async(fn ->
+          NimblePool.checkout!(pool, fn :client_state_out ->
+            send(parent, :lock)
+            assert_receive :release
+            {:result, :client_state_in}
+          end)
+        end)
+
+      assert_receive :lock
+
+      task2 =
+        Task.async(fn ->
+          NimblePool.checkout!(pool, fn :client_state_out ->
+            send(parent, :lock)
+            assert_receive :release
+            {:result, :client_state_in}
+          end)
+        end)
+
+      assert_receive :lock
+
+      send(task1.pid, :release)
+      send(task2.pid, :release)
+      assert Task.await(task1) == :result
+      assert Task.await(task2) == :result
+    end
   end
 
   describe "handle_info" do
