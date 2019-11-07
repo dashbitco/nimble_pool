@@ -354,4 +354,72 @@ defmodule NimblePoolTest do
       assert Task.await(task2) == :result
     end
   end
+
+  describe "handle_info" do
+    test "is invoked for all children" do
+      parent = self()
+
+      pool =
+        stateless_pool!([
+          init: fn next -> {:ok, next} end,
+          handle_info: fn :handle_info, next -> send(parent, :info) && {:ok, next} end,
+          terminate: fn _, _ -> :ok end
+        ], pool_size: 2)
+
+      send(pool, :handle_info)
+
+      assert_receive :info
+      assert_receive :info
+    end
+
+    test "forwards DOWN messages" do
+      ref = make_ref()
+      parent = self()
+
+      pool =
+        stateless_pool!([
+          init: fn next -> {:ok, next} end,
+          handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
+          terminate: fn _, _ -> :ok end
+        ], pool_size: 2)
+
+      send(pool, {:DOWN, ref, :process, parent, :shutdown})
+
+      assert_receive {:DOWN, ^ref, :process, ^parent, :shutdown}
+      assert_receive {:DOWN, ^ref, :process, ^parent, :shutdown}
+    end
+
+    test "forwards ref messages" do
+      ref = make_ref()
+      parent = self()
+
+      pool =
+        stateless_pool!([
+          init: fn next -> {:ok, next} end,
+          handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
+          terminate: fn _, _ -> :ok end
+        ], pool_size: 2)
+
+      send(pool, {ref, :ok})
+
+      assert_receive {^ref, :ok}
+      assert_receive {^ref, :ok}
+    end
+
+    test "forwards exit messages" do
+      parent = self()
+
+      pool =
+        stateless_pool!([
+          init: fn next -> {:ok, next} end,
+          handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
+          terminate: fn _, _ -> :ok end
+        ], pool_size: 2)
+
+      send(pool, {:EXIT, parent, :normal})
+
+      assert_receive {:EXIT, ^parent, :normal}
+      assert_receive {:EXIT, ^parent, :normal}
+    end
+  end
 end
