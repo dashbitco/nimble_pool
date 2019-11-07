@@ -23,6 +23,72 @@ NimblePool may not be a good option to manage processes. Also avoid using Nimble
 ### Port-based example
 
 ```elixir
+defmodule PortPool do
+  @behaviour NimblePool
+
+  @doc ~S"""
+  Executes a given command against a port kept by the pool.
+
+  First we start the port:
+
+      iex> child = {NimblePool, worker: {PortPool, :cat}, name: PortPool}
+      iex> Supervisor.start_link([child], strategy: :one_for_one)
+
+  Now we can run commands against the pool of ports:
+
+      iex> PortPool.command(PortPool, "hello\n")
+      "hello\n"
+      iex> PortPool.command(PortPool, "world\n")
+      "world\n"
+
+  """
+  def command(pool, command, timeout \\ 5000) do
+    NimblePool.checkout!(pool, fn {port, pool} ->
+      send(port, {self(), {:command, command}})
+
+      data =
+        receive do
+          {^port, {:data, data}} -> data
+        after
+          timeout -> raise "did not receive port data"
+        end
+
+      send(port, {self(), {:connect, pool}})
+
+      receive do
+        {^port, :connected} -> {data, :done}
+      after
+        timeout -> raise "did not receive port transfer"
+      end
+    end, timeout)
+  end
+
+  @impl NimblePool
+  def init(:cat) do
+    path = System.find_executable("cat")
+    port = Port.open({:spawn_executable, path}, [:binary, args: ["-"]])
+    {:ok, port}
+  end
+
+  @impl NimblePool
+  # Transfer the port to the caller
+  def handle_checkout({pid, _}, port) do
+    send(port, {self(), {:connect, pid}})
+    {:ok, {port, self()}, port}
+  end
+
+  @impl NimblePool
+  # We got it back
+  def handle_checkin(:done, _from, port) do
+    {:ok, port}
+  end
+
+  @impl NimblePool
+  # On removal and terminate, effectively close it
+  def terminate(_reason, port) do
+    send(port, {self(), :close})
+  end
+end
 ```
 
 ### HTTP1-based example
