@@ -360,11 +360,14 @@ defmodule NimblePoolTest do
       parent = self()
 
       pool =
-        stateless_pool!([
-          init: fn next -> {:ok, next} end,
-          handle_info: fn :handle_info, next -> send(parent, :info) && {:ok, next} end,
-          terminate: fn _, _ -> :ok end
-        ], pool_size: 2)
+        stateless_pool!(
+          [
+            init: fn next -> {:ok, next} end,
+            handle_info: fn :handle_info, next -> send(parent, :info) && {:ok, next} end,
+            terminate: fn _, _ -> :ok end
+          ],
+          pool_size: 2
+        )
 
       send(pool, :handle_info)
 
@@ -377,11 +380,14 @@ defmodule NimblePoolTest do
       parent = self()
 
       pool =
-        stateless_pool!([
-          init: fn next -> {:ok, next} end,
-          handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
-          terminate: fn _, _ -> :ok end
-        ], pool_size: 2)
+        stateless_pool!(
+          [
+            init: fn next -> {:ok, next} end,
+            handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
+            terminate: fn _, _ -> :ok end
+          ],
+          pool_size: 2
+        )
 
       send(pool, {:DOWN, ref, :process, parent, :shutdown})
 
@@ -394,11 +400,14 @@ defmodule NimblePoolTest do
       parent = self()
 
       pool =
-        stateless_pool!([
-          init: fn next -> {:ok, next} end,
-          handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
-          terminate: fn _, _ -> :ok end
-        ], pool_size: 2)
+        stateless_pool!(
+          [
+            init: fn next -> {:ok, next} end,
+            handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
+            terminate: fn _, _ -> :ok end
+          ],
+          pool_size: 2
+        )
 
       send(pool, {ref, :ok})
 
@@ -410,11 +419,14 @@ defmodule NimblePoolTest do
       parent = self()
 
       pool =
-        stateless_pool!([
-          init: fn next -> {:ok, next} end,
-          handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
-          terminate: fn _, _ -> :ok end
-        ], pool_size: 2)
+        stateless_pool!(
+          [
+            init: fn next -> {:ok, next} end,
+            handle_info: fn msg, next -> send(parent, msg) && {:ok, next} end,
+            terminate: fn _, _ -> :ok end
+          ],
+          pool_size: 2
+        )
 
       send(pool, {:EXIT, parent, :normal})
 

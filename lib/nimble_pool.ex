@@ -1,4 +1,9 @@
 defmodule NimblePool do
+  @moduledoc "README.md"
+             |> File.read!()
+             |> String.split("<!-- MDOC !-->")
+             |> Enum.fetch!(1)
+
   use GenServer
   require Logger
 
