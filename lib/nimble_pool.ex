@@ -15,7 +15,7 @@ defmodule NimblePool do
   @callback init(term) ::
               {:ok, server_state} | {:async, (() -> server_state)}
 
-  @callback handle_checkout(from, server_state) ::
+  @callback handle_checkout(command :: term, from, server_state) ::
               {:ok, client_state, server_state} | {:remove, user_reason}
 
   @callback handle_checkin(client_state, from, server_state) ::
@@ -61,7 +61,7 @@ defmodule NimblePool do
     GenServer.stop(server, reason, timeout)
   end
 
-  def checkout!(pool, fun, timeout \\ 5_000) do
+  def checkout!(pool, command, fun, timeout \\ 5_000) do
     # Reimplementation of gen.erl call to avoid multiple monitors.
     pid = GenServer.whereis(pool)
 
@@ -70,7 +70,7 @@ defmodule NimblePool do
     end
 
     ref = Process.monitor(pid)
-    send_call(pid, ref, :checkout)
+    send_call(pid, ref, {:checkout, command})
 
     receive do
       {^ref, worker_client_state} ->
@@ -161,13 +161,13 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_call(:checkout, {pid, ref} = from, state) do
+  def handle_call({:checkout, command}, {pid, ref} = from, state) do
     %{requests: requests, monitors: monitors} = state
     mon_ref = Process.monitor(pid)
-    requests = Map.put(requests, ref, {pid, mon_ref})
+    requests = Map.put(requests, ref, {pid, mon_ref, :command, command})
     monitors = Map.put(monitors, mon_ref, ref)
     state = %{state | requests: requests, monitors: monitors}
-    {:noreply, maybe_checkout(mon_ref, from, state)}
+    {:noreply, maybe_checkout(command, mon_ref, from, state)}
   end
 
   @impl true
@@ -176,7 +176,7 @@ defmodule NimblePool do
       state
 
     case requests do
-      %{^ref => {^pid, mon_ref, worker_server_state}} ->
+      %{^ref => {^pid, mon_ref, :state, worker_server_state}} ->
         checkin =
           if function_exported?(worker, :handle_checkin, 3) do
             worker.handle_checkin(worker_client_state, from, worker_server_state)
@@ -287,14 +287,14 @@ defmodule NimblePool do
 
     case requests do
       # Exited or timed out before we could serve it
-      %{^ref => {_, mon_ref}} ->
+      %{^ref => {_, mon_ref, :command, _}} ->
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
         {:noreply, %{state | requests: requests, monitors: monitors}}
 
       # Exited or errored during client processing
-      %{^ref => {_, mon_ref, worker_server_state}} ->
+      %{^ref => {_, mon_ref, :state, worker_server_state}} ->
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
@@ -342,8 +342,8 @@ defmodule NimblePool do
       {{:value, {pid, ref}}, queue} ->
         case requests do
           # The request still exists, so we are good to go
-          %{^ref => {^pid, mon_ref}} ->
-            maybe_checkout(mon_ref, {pid, ref}, %{state | queue: queue})
+          %{^ref => {^pid, mon_ref, :command, command}} ->
+            maybe_checkout(command, mon_ref, {pid, ref}, %{state | queue: queue})
 
           # It should never happen
           %{^ref => _} ->
@@ -359,21 +359,21 @@ defmodule NimblePool do
     end
   end
 
-  defp maybe_checkout(mon_ref, {pid, ref} = from, state) do
+  defp maybe_checkout(command, mon_ref, {pid, ref} = from, state) do
     %{resources: resources, requests: requests, worker: worker, queue: queue, async: async} =
       state
 
     case :queue.out(resources) do
       {{:value, worker_server_state}, resources} ->
-        case worker.handle_checkout(from, worker_server_state) do
+        case worker.handle_checkout(command, from, worker_server_state) do
           {:ok, worker_client_state, worker_server_state} ->
             GenServer.reply({pid, ref}, worker_client_state)
-            requests = Map.put(requests, ref, {pid, mon_ref, worker_server_state})
+            requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
             %{state | resources: resources, requests: requests}
 
           {:remove, reason} ->
             {resources, async} = remove(reason, worker_server_state, resources, async, state)
-            maybe_checkout(mon_ref, from, %{state | resources: resources, async: async})
+            maybe_checkout(command, mon_ref, from, %{state | resources: resources, async: async})
         end
 
       {:empty, _} ->
