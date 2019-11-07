@@ -70,6 +70,14 @@ defmodule NimblePoolTest do
     refute_received {:DOWN, _, _, _, _}
   end
 
+  describe "init" do
+    test "raises on invalid return" do
+      assert_raise RuntimeError, ~r"Expected: {:ok, state} | {:async, (() -> state)}", fn ->
+        stateless_pool!(init: fn _ -> :oops end)
+      end
+    end
+  end
+
   describe "checkout!" do
     test "exits with noproc for missing process" do
       assert catch_exit(NimblePool.checkout!(:unknown, &{&1, &1})) ==
@@ -432,6 +440,75 @@ defmodule NimblePoolTest do
 
       assert_receive {:EXIT, ^parent, :normal}
       assert_receive {:EXIT, ^parent, :normal}
+    end
+  end
+
+  describe "async" do
+    defp async_init(fun) do
+      fn next ->
+        {:async,
+         fn ->
+           fun.()
+           next
+         end}
+      end
+    end
+
+    test "lazily initializes a connection" do
+      parent = self()
+
+      async_init =
+        async_init(fn ->
+          send(parent, {:async, self()})
+          assert_receive(:release)
+        end)
+
+      pool =
+        stateless_pool!(
+          init: async_init,
+          handle_checkout: fn _from, next -> {:ok, :client_state_out, next} end,
+          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          terminate: fn reason, [] -> send(parent, {:terminate, reason}) end
+        )
+
+      assert_receive {:async, task}
+
+      assert catch_exit(NimblePool.checkout!(pool, fn _ -> raise "never invoked" end, 50)) ==
+               {:timeout, {NimblePool, :checkout, [pool]}}
+
+      send(task, :release)
+
+      assert NimblePool.checkout!(pool, fn :client_state_out -> {:result, :client_state_in} end) ==
+               :result
+    end
+
+    @tag :capture_log
+    test "reinitializes the connection if it fails" do
+      parent = self()
+
+      async_init =
+        async_init(fn ->
+          send(parent, {:async, self()})
+          assert_receive({:release, as})
+          if as == :error, do: raise("oops"), else: :ok
+        end)
+
+      pool =
+        stateless_pool!(
+          init: async_init,
+          handle_checkout: fn _from, next -> {:ok, :client_state_out, next} end,
+          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          terminate: fn reason, [] -> send(parent, {:terminate, reason}) end
+        )
+
+      assert_receive {:async, task}
+      send(task, {:release, :error})
+
+      assert_receive {:async, task}
+      send(task, {:release, :ok})
+
+      assert NimblePool.checkout!(pool, fn :client_state_out -> {:result, :client_state_in} end) ==
+               :result
     end
   end
 end

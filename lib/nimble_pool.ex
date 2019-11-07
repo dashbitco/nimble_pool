@@ -244,7 +244,8 @@ defmodule NimblePool do
         Process.demonitor(ref, [:flush])
         resources = :queue.in(worker_state, resources)
         async = Map.delete(async, ref)
-        {:noreply, %{state | async: async, resources: resources}}
+        state = %{state | async: async, resources: resources}
+        {:noreply, maybe_checkout(state)}
 
       %{} ->
         maybe_handle_info(reply, state)
@@ -350,7 +351,7 @@ defmodule NimblePool do
 
           # The request is no longer active, do nothing
           %{} ->
-            %{state | queue: queue}
+            maybe_checkout(%{state | queue: queue})
         end
 
       {:empty, _queue} ->
