@@ -172,41 +172,35 @@ defmodule NimblePool do
 
   @impl true
   def handle_call({:checkin, worker_client_state}, {pid, ref} = from, state) do
-    %{requests: requests, resources: resources, worker: worker, monitors: monitors, async: async} =
-      state
+    %{requests: requests, resources: resources, worker: worker, monitors: monitors} = state
 
     case requests do
       %{^ref => {^pid, mon_ref, :state, worker_server_state}} ->
         checkin =
           if function_exported?(worker, :handle_checkin, 3) do
-            worker.handle_checkin(worker_client_state, from, worker_server_state)
+            args = [worker_client_state, from, worker_server_state]
+            apply_callback(worker, :handle_checkin, args)
           else
             {:ok, worker_server_state}
           end
 
         GenServer.reply(from, :ok)
 
-        {resources, async} =
+        resources =
           case checkin do
             {:ok, worker_server_state} ->
-              {:queue.in(worker_server_state, resources), async}
+              :queue.in(worker_server_state, resources)
 
             {:remove, reason} ->
-              remove(reason, worker_server_state, resources, async, state)
+              :ok = remove(reason, worker_server_state, state)
+              resources
           end
 
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
 
-        state = %{
-          state
-          | requests: requests,
-            monitors: monitors,
-            resources: resources,
-            async: async
-        }
-
+        state = %{state | requests: requests, monitors: monitors, resources: resources}
         {:noreply, maybe_checkout(state)}
 
       %{} ->
@@ -217,6 +211,13 @@ defmodule NimblePool do
   @impl true
   def handle_info({__MODULE__, ref, reason}, state) do
     remove_request_ref(ref, reason, state)
+  end
+
+  @impl true
+  def handle_info({__MODULE__, :init}, state) do
+    %{async: async, resources: resources, worker: worker, arg: arg} = state
+    {resources, async} = init_worker(worker, arg, resources, async)
+    {:noreply, maybe_checkout(%{state | async: async, resources: resources})}
   end
 
   @impl true
@@ -283,7 +284,7 @@ defmodule NimblePool do
   end
 
   defp remove_request_ref(ref, reason, state) do
-    %{resources: resources, requests: requests, monitors: monitors, async: async} = state
+    %{resources: resources, requests: requests, monitors: monitors} = state
 
     case requests do
       # Exited or timed out before we could serve it
@@ -298,16 +299,8 @@ defmodule NimblePool do
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
-        {resources, async} = remove(reason, worker_server_state, resources, async, state)
-
-        state = %{
-          state
-          | requests: requests,
-            monitors: monitors,
-            resources: resources,
-            async: async
-        }
-
+        :ok = remove(reason, worker_server_state, state)
+        state = %{state | requests: requests, monitors: monitors, resources: resources}
         {:noreply, state}
 
       %{} ->
@@ -316,22 +309,23 @@ defmodule NimblePool do
   end
 
   defp maybe_handle_info(msg, state) do
-    %{resources: resources, worker: worker, async: async} = state
+    %{resources: resources, worker: worker} = state
 
     if function_exported?(worker, :handle_info, 2) do
-      {resources, async} =
-        Enum.reduce(:queue.to_list(resources), {:queue.new(), async}, fn
-          worker_server_state, {resources, async} ->
-            case worker.handle_info(msg, worker_server_state) do
+      resources =
+        Enum.reduce(:queue.to_list(resources), :queue.new(), fn
+          worker_server_state, resources ->
+            case apply_callback(worker, :handle_info, [msg, worker_server_state]) do
               {:ok, worker_server_state} ->
-                {:queue.in(worker_server_state, resources), async}
+                :queue.in(worker_server_state, resources)
 
               {:remove, reason} ->
-                remove(reason, worker_server_state, resources, async, state)
+                :ok = remove(reason, worker_server_state, state)
+                resources
             end
         end)
 
-      {:noreply, %{state | resources: resources, async: async}}
+      {:noreply, %{state | resources: resources}}
     else
       {:noreply, state}
     end
@@ -360,20 +354,27 @@ defmodule NimblePool do
   end
 
   defp maybe_checkout(command, mon_ref, {pid, ref} = from, state) do
-    %{resources: resources, requests: requests, worker: worker, queue: queue, async: async} =
-      state
+    %{resources: resources, requests: requests, worker: worker, queue: queue} = state
 
     case :queue.out(resources) do
       {{:value, worker_server_state}, resources} ->
-        case worker.handle_checkout(command, from, worker_server_state) do
+        case apply_callback(worker, :handle_checkout, [command, from, worker_server_state]) do
           {:ok, worker_client_state, worker_server_state} ->
             GenServer.reply({pid, ref}, worker_client_state)
             requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
             %{state | resources: resources, requests: requests}
 
           {:remove, reason} ->
-            {resources, async} = remove(reason, worker_server_state, resources, async, state)
-            maybe_checkout(command, mon_ref, from, %{state | resources: resources, async: async})
+            :ok = remove(reason, worker_server_state, state)
+            maybe_checkout(command, mon_ref, from, %{state | resources: resources})
+
+          other ->
+            raise """
+            unexpected return from #{inspect(worker)}.handle_checkout/3.
+
+            Expected: {:ok, client_state, server_state} | {:remove, reason}
+            Got: #{inspect(other)}
+            """
         end
 
       {:empty, _} ->
@@ -381,26 +382,30 @@ defmodule NimblePool do
     end
   end
 
-  defp remove(reason, worker_server_state, resources, async, state) do
-    %{worker: worker, arg: arg} = state
+  defp remove(reason, worker_server_state, %{worker: worker}) do
     maybe_terminate(worker, reason, worker_server_state)
-    init_worker(worker, arg, resources, async)
+    schedule_init()
+    :ok
   end
 
   defp maybe_terminate(worker, reason, worker_server_state) do
     if function_exported?(worker, :terminate, 2) do
-      worker.terminate(reason, worker_server_state)
+      _ = apply_callback(worker, :terminate, [reason, worker_server_state])
     end
   end
 
   defp init_worker(worker, arg, resources, async) do
-    case worker.init(arg) do
+    case apply_callback(worker, :init, [arg]) do
       {:ok, worker_state} ->
         {:queue.in(worker_state, resources), async}
 
       {:async, fun} when is_function(fun, 0) ->
         %{ref: ref, pid: pid} = Task.Supervisor.async(NimblePool.TaskSupervisor, fun)
         {resources, async |> Map.put(ref, pid) |> Map.put(pid, ref)}
+
+      {:remove, _reason} ->
+        send(self(), {__MODULE__, :init})
+        {resources, async}
 
       other ->
         raise """
@@ -411,4 +416,30 @@ defmodule NimblePool do
         """
     end
   end
+
+  defp schedule_init() do
+    send(self(), {__MODULE__, :init})
+  end
+
+  defp apply_callback(worker, fun, args) do
+    try do
+      apply(worker, fun, args)
+    catch
+      kind, reason ->
+        reason = Exception.normalize(kind, reason, __STACKTRACE__)
+
+        Logger.error(
+          [
+            "Error during #{inspect(worker)}.#{fun}/#{length(args)} callback:\n"
+            | Exception.format(kind, reason, __STACKTRACE__)
+          ],
+          crash_reason: {crash_reason(kind, reason), __STACKTRACE__}
+        )
+
+        {:remove, reason}
+    end
+  end
+
+  defp crash_reason(:throw, value), do: {:nocatch, value}
+  defp crash_reason(_, value), do: value
 end
