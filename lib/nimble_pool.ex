@@ -78,7 +78,7 @@ defmodule NimblePool do
           fun.(worker_client_state)
         catch
           kind, reason ->
-            send_remove(pid, ref, kind)
+            send_cancel(pid, ref, kind)
             :erlang.raise(kind, reason, __STACKTRACE__)
         else
           {result, worker_client_state} ->
@@ -93,7 +93,7 @@ defmodule NimblePool do
         exit!(reason, :checkout, [pool])
     after
       timeout ->
-        send_remove(pid, ref, :timeout)
+        send_cancel(pid, ref, :timeout)
         exit!(:timeout, :checkout, [pool])
     end
   end
@@ -107,7 +107,7 @@ defmodule NimblePool do
     Process.send(pid, {:"$gen_call", {self(), ref}, message}, [:noconnect])
   end
 
-  defp send_remove(pid, ref, reason) do
+  defp send_cancel(pid, ref, reason) do
     send(pid, {__MODULE__, ref, reason})
     Process.demonitor(ref, [:flush])
   end
@@ -210,7 +210,7 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, ref, reason}, state) do
-    remove_request_ref(ref, reason, state)
+    cancel_request_ref(ref, reason, state)
   end
 
   @impl true
@@ -226,7 +226,7 @@ defmodule NimblePool do
 
     case monitors do
       %{^ref => request_ref} ->
-        remove_request_ref(request_ref, :DOWN, state)
+        cancel_request_ref(request_ref, :DOWN, state)
 
       %{} ->
         case async do
@@ -283,7 +283,7 @@ defmodule NimblePool do
     {:noreply, %{state | resources: resources, async: async}}
   end
 
-  defp remove_request_ref(ref, reason, state) do
+  defp cancel_request_ref(ref, reason, state) do
     %{resources: resources, requests: requests, monitors: monitors} = state
 
     case requests do
