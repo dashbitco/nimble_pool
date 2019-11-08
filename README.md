@@ -20,6 +20,8 @@ NimblePool may not be a good option to manage processes. Also avoid using Nimble
 
 ## Examples
 
+To use `NimblePool`, you must define a module that implements the pool worker logic, outlined in the `NimblePool` behaviour.
+
 ### Port-based example
 
 The example below keeps ports on the pool and check them out on every command. Please read the docs for `Port` before using the approach below, especially in regards to zombie ports.

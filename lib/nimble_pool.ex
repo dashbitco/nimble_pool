@@ -8,27 +8,99 @@ defmodule NimblePool do
   require Logger
 
   @type from :: {pid, reference}
-  @type server_state :: term
+  @type worker_state :: term
   @type client_state :: term
   @type user_reason :: term
 
+  @doc """
+  Initializes the worker.
+
+  It must return `{:ok, worker_state}` or `{:async, fun}`, where the
+  `fun` is a zero-arity function that must return the worker state.
+
+  Note this callback is synchronous and therefore will block the pool.
+  If you need to perform long initialization, consider using the
+  `{:async, fun}` return type.
+  """
   @callback init(term) ::
-              {:ok, server_state} | {:async, (() -> server_state)}
+              {:ok, worker_state} | {:async, (() -> worker_state)}
 
-  @callback handle_checkout(command :: term, from, server_state) ::
-              {:ok, client_state, server_state} | {:remove, user_reason}
+  @doc """
+  Checks a worker out.
 
-  @callback handle_checkin(client_state, from, server_state) ::
-              {:ok, server_state} | {:remove, user_reason}
+  It receives the `command`, given to on `checkout!/4` and it must
+  return either `{:ok, client_state, worker_state}` or `{:remove, reason}`.
+  If `:remove` is returned, `NimblePool` will attempt to checkout another
+  worker.
 
-  @callback handle_info(message :: term, server_state) ::
-              {:ok, server_state} | {:remove, user_reason}
+  Note this callback is synchronous and therefore will block the pool.
+  Avoid performing long work in here, instead do as much work as
+  possible on the client.
+  """
+  @callback handle_checkout(command :: term, from, worker_state) ::
+              {:ok, client_state, worker_state} | {:remove, user_reason}
 
-  @callback terminate(:DOWN | :timeout | :throw | :error | :exit | user_reason, server_state) ::
+  @doc """
+  Checks a worker in.
+
+  It receives the `client_state`, returned by the `checkout!/4` anonymous
+  function and it must return either `{:ok, worker_state}` or `{:remove, reason}`.
+
+  Note this callback is synchronous and therefore will block the pool.
+  Avoid performing long work in here, instead do as much work as
+  possible on the client.
+
+  This callback is optional.
+  """
+  @callback handle_checkin(client_state, from, worker_state) ::
+              {:ok, worker_state} | {:remove, user_reason}
+
+  @doc """
+  Receives a message in the worker.
+
+  It receives the `message` and it must return either
+  `{:ok, worker_state}` or `{:remove, reason}`.
+
+  Note this callback is synchronous and therefore will block the pool.
+  Avoid performing long work in here.
+
+  This callback is optional.
+  """
+  @callback handle_info(message :: term, worker_state) ::
+              {:ok, worker_state} | {:remove, user_reason}
+
+  @doc """
+  Terminates a worker.
+
+  This callback is invoked with `:DOWN` whenever the client
+  link breaks, with `:timeout` whenever the client times out,
+  with one of `:throw`, `:error`, `:exit` whenever the client
+  crashes with one of the reasons above.
+
+  If at any point you return `{:remove, reason}`, the `reason`
+  will also be given to `terminate`. If any callback raises,
+  the raised exception will be given as `reason`.
+
+  It receives the latest known `worker_state`, which may not
+  be the latest state. For example, if a client checksout the
+  state and crashes, we don't fully know the `client_state`,
+  so the `terminate` callback needs to take such scenarios
+  into account.
+
+  This callback is optional.
+  """
+  @callback terminate(:DOWN | :timeout | :throw | :error | :exit | user_reason, worker_state) ::
               :ok
 
-  @optional_callbacks handle_info: 2, terminate: 2
+  @optional_callbacks handle_checkin: 3, handle_info: 2, terminate: 2
 
+  @doc """
+  Defines a pool to be started under the supervision tree.
+
+  It accepts the same options as `start_link/1` with the
+  addition or `:restart` and `:shutdown` that control the
+  "Child Specification".
+  """
   def child_spec(opts) do
     {worker, _} = Keyword.fetch!(opts, :worker)
     {restart, opts} = Keyword.pop(opts, :restart, :permanent)
@@ -42,6 +114,18 @@ defmodule NimblePool do
     }
   end
 
+  @doc """
+  Starts a pool.
+
+  ## Options
+
+    * `:worker` - a `{worker_mod, worker_init_arg}` tuple with the worker
+      module that implements the `NimblePool` behaviour and the worker
+      initial argument. This argument is required.
+
+    * `:pool_size - how many workers in the pool. Defaults to 10.
+
+  """
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
@@ -57,11 +141,27 @@ defmodule NimblePool do
     GenServer.start_link(__MODULE__, {worker, arg, pool_size}, opts)
   end
 
-  def stop(server, reason \\ :normal, timeout \\ :infinity) do
-    GenServer.stop(server, reason, timeout)
+  @doc """
+  Stops a pool.
+  """
+  def stop(pool, reason \\ :normal, timeout \\ :infinity) do
+    GenServer.stop(pool, reason, timeout)
   end
 
-  def checkout!(pool, command, fun, timeout \\ 5_000) do
+  @doc """
+  Checks out from the pool.
+
+  It expects a command, which will be passed to the `c:handle_checkout/3`
+  callback. The `c:handle_checkout/3` callback will return a client state,
+  which is given to the `function`. The `function` must return a two-element
+  tuple, where the first element is the function return value, and the second
+  element is the updated `client_state`, which will be given as the first
+  argument to `c:handle_checkin/3`.
+
+  `checkout!` also has an optional `timeout` value, this value will be applied
+  to checkout and checkin operations independently.
+  """
+  def checkout!(pool, command, function, timeout \\ 5_000) when is_function(function, 1) do
     # Reimplementation of gen.erl call to avoid multiple monitors.
     pid = GenServer.whereis(pool)
 
@@ -75,7 +175,7 @@ defmodule NimblePool do
     receive do
       {^ref, worker_client_state} ->
         try do
-          fun.(worker_client_state)
+          function.(worker_client_state)
         catch
           kind, reason ->
             send_cancel(pid, ref, kind)
