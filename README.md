@@ -14,7 +14,9 @@ In such pools, you usually end-up with two scenarios:
 
   * You invoke the pool manager, which returns the pooled process, which gives you access to the resource. Then you can act directly on the resource, avoiding the data copying, but you need to keep the state of the resource in sync with the process
 
-NimblePool allows you to implement the second scenario without the addition of processes, which leads to a simpler and more efficient implementation. You should consider using NimblePool whenever you have to manage sockets, ports, or NIF resources and you want to perform **blocking** operations on them. For example, NimblePool is a good solution to manage HTTP 1 connections, ports that need to communicate with long-running programs, etc.
+NimblePool allows you to implement the second scenario without the addition of processes, which leads to a simpler and more efficient implementation. You should consider using NimblePool whenever you have to manage sockets, ports, or NIF resources and you want the client to perform one-off operations on them. For example, NimblePool is a good solution to manage HTTP 1 connections, ports that need to communicate with long-running programs, etc.
+
+The downside of NimblePool is that, because all resources are under a single process, any resource management operation will happen on this single process, which is more likely to become a bottleneck. This can be addressed, however, by starting one NimblePool per scheduler and by doing scheduler-based dispatches.
 
 NimblePool may not be a good option to manage processes. Also avoid using NimblePool to manage resources that support multiplexing, such as HTTP 2 connections (in fact, pools are not a good option to manage resources with multiplexing in general).
 
@@ -237,15 +239,15 @@ end
 
 ## Nimble*
 
-Other nimble libraries by Plataformatec:
+Other nimble libraries by Dashbit:
 
-  * [NimbleCSV](https://github.com/plataformatec/nimble_csv) - simple and fast CSV parsing
-  * [NimbleParsec](https://github.com/plataformatec/nimble_csv) - simple and fast parser combinators
-  * [NimbleStrftime](https://github.com/plataformatec/nimble_strftime) - simple and fast strftime-based datetime formatter
+  * [NimbleCSV](https://github.com/dashbitco/nimble_csv) - simple and fast CSV parsing
+  * [NimbleParsec](https://github.com/dashbitco/nimble_csv) - simple and fast parser combinators
 
 ## License
 
 Copyright 2019 Plataformatec
+Copyright 2020 Dashbit
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
