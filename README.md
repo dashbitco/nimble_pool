@@ -242,7 +242,7 @@ end
 Other nimble libraries by Dashbit:
 
   * [NimbleCSV](https://github.com/dashbitco/nimble_csv) - simple and fast CSV parsing
-  * [NimbleParsec](https://github.com/dashbitco/nimble_csv) - simple and fast parser combinators
+  * [NimbleParsec](https://github.com/dashbitco/nimble_parsec) - simple and fast parser combinators
 
 ## License
 
