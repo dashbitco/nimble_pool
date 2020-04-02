@@ -30,7 +30,7 @@ defmodule NimblePool do
 
   Receives the `pool_state` as an argument and must return `{:ok, pool_state}`
   upon successful initialization, `:ignore` to exit normally, or `{:stop, reason}`
-  to exit with `reason`, returning `{:error, reason}`.
+  to exit with `reason` and return `{:error, reason}`.
 
   This is a good place to perform any registration or special pool_state initialization.
 
