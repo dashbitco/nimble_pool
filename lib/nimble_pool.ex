@@ -26,6 +26,23 @@ defmodule NimblePool do
               {:ok, worker_state} | {:async, (() -> worker_state)}
 
   @doc """
+  Initializes the pool.
+
+  Receives the `pool_state` as an argument and must return `{:ok, pool_state}`
+  or any valid GenServer.init/1 return value.
+
+  This is a good place to perform any registration or special pool_state initialization.
+
+  This callback is optional.
+  """
+  @callback init_pool(term) ::
+              {:ok, state}
+              | {:ok, state, timeout() | :hibernate | {:continue, term()}}
+              | :ignore
+              | {:stop, reason :: any()}
+            when state: any()
+
+  @doc """
   Checks a worker out.
 
   It receives the `command`, given to on `checkout!/4` and it must
@@ -92,7 +109,7 @@ defmodule NimblePool do
   @callback terminate(:DOWN | :timeout | :throw | :error | :exit | user_reason, worker_state) ::
               :ok
 
-  @optional_callbacks handle_checkin: 3, handle_info: 2, terminate: 2
+  @optional_callbacks init_pool: 1, handle_checkin: 3, handle_info: 2, terminate: 2
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -257,7 +274,11 @@ defmodule NimblePool do
       async: async
     }
 
-    {:ok, state}
+    if function_exported?(worker, :init_pool, 1) do
+      worker.init_pool(state)
+    else
+      {:ok, state}
+    end
   end
 
   @impl true
