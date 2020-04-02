@@ -4,8 +4,18 @@ defmodule NimblePoolTest do
   defmodule StatelessPool do
     @behaviour NimblePool
 
+    def init_pool({_worker, arg, _pool_size} = init_args) do
+      if is_function(arg[:init_pool]) do
+        arg[:init_pool].(init_args)
+      else
+        :ok
+      end
+    end
+
     def init(instructions) do
-      next(instructions, :init, [])
+      instructions
+      |> Keyword.delete(:init_pool)
+      |> next(:init, [])
     end
 
     def handle_checkout(command, from, instructions) do
@@ -109,16 +119,23 @@ defmodule NimblePoolTest do
     end
   end
 
-  test "starts the pool with checkout, checkin, and terminate" do
+  test "starts the pool with init_pool, checkout, checkin, and terminate" do
     parent = self()
 
     pool =
       stateless_pool!(
+        init_pool: fn _ ->
+          send(parent, :init_pool)
+          :ok
+        end,
         init: fn next -> {:ok, next} end,
         handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
         handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
         terminate: fn reason, [] -> send(parent, {:terminate, reason}) end
       )
+
+    assert {:messages, [:init_pool | _]} = Process.info(self(), :messages)
+    assert_receive :init_pool
 
     assert NimblePool.checkout!(pool, :checkout, fn :client_state_out ->
              {:result, :client_state_in}

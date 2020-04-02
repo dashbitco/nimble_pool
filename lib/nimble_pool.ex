@@ -26,6 +26,19 @@ defmodule NimblePool do
               {:ok, worker_state} | {:async, (() -> worker_state)}
 
   @doc """
+  Initializes the pool.
+
+  Receives the argument passed to `start_link/1` and must return `:ok` upon
+  successful initialization, `:ignore` to exit normally, or `{:stop, reason}`
+  to exit with `reason` and return `{:error, reason}`.
+
+  This is a good place to perform a registration for example.
+
+  This callback is optional.
+  """
+  @callback init_pool(term) :: :ok | :ignore | {:stop, reason :: any()}
+
+  @doc """
   Checks a worker out.
 
   It receives the `command`, given to on `checkout!/4` and it must
@@ -92,7 +105,7 @@ defmodule NimblePool do
   @callback terminate(:DOWN | :timeout | :throw | :error | :exit | user_reason, worker_state) ::
               :ok
 
-  @optional_callbacks handle_checkin: 3, handle_info: 2, terminate: 2
+  @optional_callbacks init_pool: 1, handle_checkin: 3, handle_info: 2, terminate: 2
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -239,25 +252,27 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size}) do
+  def init({worker, arg, pool_size} = init_args) do
     Process.flag(:trap_exit, true)
 
-    {resources, async} =
-      Enum.reduce(1..pool_size, {:queue.new(), %{}}, fn _, {resources, async} ->
-        init_worker(worker, arg, resources, async)
-      end)
+    with :ok <- do_init_pool(init_args) do
+      {resources, async} =
+        Enum.reduce(1..pool_size, {:queue.new(), %{}}, fn _, {resources, async} ->
+          init_worker(worker, arg, resources, async)
+        end)
 
-    state = %{
-      resources: resources,
-      worker: worker,
-      arg: arg,
-      queue: :queue.new(),
-      requests: %{},
-      monitors: %{},
-      async: async
-    }
+      state = %{
+        worker: worker,
+        arg: arg,
+        queue: :queue.new(),
+        requests: %{},
+        monitors: %{},
+        resources: resources,
+        async: async
+      }
 
-    {:ok, state}
+      {:ok, state}
+    end
   end
 
   @impl true
@@ -375,6 +390,14 @@ defmodule NimblePool do
     end
 
     :ok
+  end
+
+  defp do_init_pool({worker, _arg, _pool_size} = init_args) do
+    if function_exported?(worker, :init_pool, 1) do
+      worker.init_pool(init_args)
+    else
+      :ok
+    end
   end
 
   defp remove_async_ref(ref, state) do
