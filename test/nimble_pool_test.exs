@@ -4,13 +4,11 @@ defmodule NimblePoolTest do
   defmodule StatelessPool do
     @behaviour NimblePool
 
-    def init_pool(pool_state) do
-      {init_pool, pool_state} = pop_in(pool_state.arg[:init_pool])
-
-      if is_function(init_pool) do
-        init_pool.(pool_state)
+    def init_pool({_worker, arg, _pool_size} = init_args) do
+      if is_function(arg[:init_pool]) do
+        arg[:init_pool].(init_args)
       else
-        {:ok, pool_state}
+        :ok
       end
     end
 
@@ -126,9 +124,9 @@ defmodule NimblePoolTest do
 
     pool =
       stateless_pool!(
-        init_pool: fn next ->
+        init_pool: fn _ ->
           send(parent, :init_pool)
-          {:ok, next}
+          :ok
         end,
         init: fn next -> {:ok, next} end,
         handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,

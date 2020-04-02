@@ -28,11 +28,11 @@ defmodule NimblePool do
   @doc """
   Initializes the pool.
 
-  Receives the `pool_state` as an argument and must return `{:ok, pool_state}`
-  upon successful initialization, `:ignore` to exit normally, or `{:stop, reason}`
+  Receives the argument passed to `start_link/1` and must return `:ok` upon
+  successful initialization, `:ignore` to exit normally, or `{:stop, reason}`
   to exit with `reason` and return `{:error, reason}`.
 
-  This is a good place to perform any registration or special pool_state initialization.
+  This is a good place to perform a registration for example.
 
   This callback is optional.
   """
@@ -252,16 +252,26 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size}) do
+  def init({worker, arg, pool_size} = init_args) do
     Process.flag(:trap_exit, true)
 
-    with {:ok, state} <- init_pool_state(worker, arg) do
+    with :ok <- do_init_pool(init_args) do
       {resources, async} =
         Enum.reduce(1..pool_size, {:queue.new(), %{}}, fn _, {resources, async} ->
           init_worker(worker, arg, resources, async)
         end)
 
-      {:ok, %{state | resources: resources, async: async}}
+      state = %{
+        worker: worker,
+        arg: arg,
+        queue: :queue.new(),
+        requests: %{},
+        monitors: %{},
+        resources: resources,
+        async: async
+      }
+
+      {:ok, state}
     end
   end
 
@@ -382,21 +392,11 @@ defmodule NimblePool do
     :ok
   end
 
-  defp init_pool_state(worker, arg) do
-    state = %{
-      worker: worker,
-      arg: arg,
-      queue: :queue.new(),
-      requests: %{},
-      monitors: %{},
-      resources: [],
-      async: nil
-    }
-
+  defp do_init_pool({worker, _arg, _pool_size} = init_args) do
     if function_exported?(worker, :init_pool, 1) do
-      worker.init_pool(state)
+      worker.init_pool(init_args)
     else
-      {:ok, state}
+      :ok
     end
   end
 
