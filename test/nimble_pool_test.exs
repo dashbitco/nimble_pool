@@ -134,6 +134,7 @@ defmodule NimblePoolTest do
         terminate: fn reason, [] -> send(parent, {:terminate, reason}) end
       )
 
+    assert {:messages, [:init_pool | _]} = Process.info(self(), :messages)
     assert_receive :init_pool
 
     assert NimblePool.checkout!(pool, :checkout, fn :client_state_out ->
