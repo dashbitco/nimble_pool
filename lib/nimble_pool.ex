@@ -29,18 +29,14 @@ defmodule NimblePool do
   Initializes the pool.
 
   Receives the `pool_state` as an argument and must return `{:ok, pool_state}`
-  or any valid GenServer.init/1 return value.
+  upon successful initialization, `:ignore` to exit normally, or `{:stop, reason}`
+  to exit with `reason`, returning `{:error, reason}`.
 
   This is a good place to perform any registration or special pool_state initialization.
 
   This callback is optional.
   """
-  @callback init_pool(term) ::
-              {:ok, state}
-              | {:ok, state, timeout() | :hibernate | {:continue, term()}}
-              | :ignore
-              | {:stop, reason :: any()}
-            when state: any()
+  @callback init_pool(term) :: :ok | :ignore | {:stop, reason :: any()}
 
   @doc """
   Checks a worker out.
@@ -259,25 +255,13 @@ defmodule NimblePool do
   def init({worker, arg, pool_size}) do
     Process.flag(:trap_exit, true)
 
-    {resources, async} =
-      Enum.reduce(1..pool_size, {:queue.new(), %{}}, fn _, {resources, async} ->
-        init_worker(worker, arg, resources, async)
-      end)
+    with {:ok, state} <- init_pool_state(worker, arg) do
+      {resources, async} =
+        Enum.reduce(1..pool_size, {:queue.new(), %{}}, fn _, {resources, async} ->
+          init_worker(worker, arg, resources, async)
+        end)
 
-    state = %{
-      resources: resources,
-      worker: worker,
-      arg: arg,
-      queue: :queue.new(),
-      requests: %{},
-      monitors: %{},
-      async: async
-    }
-
-    if function_exported?(worker, :init_pool, 1) do
-      worker.init_pool(state)
-    else
-      {:ok, state}
+      {:ok, %{state | resources: resources, async: async}}
     end
   end
 
@@ -396,6 +380,24 @@ defmodule NimblePool do
     end
 
     :ok
+  end
+
+  defp init_pool_state(worker, arg) do
+    state = %{
+      worker: worker,
+      arg: arg,
+      queue: :queue.new(),
+      requests: %{},
+      monitors: %{},
+      resources: [],
+      async: nil
+    }
+
+    if function_exported?(worker, :init_pool, 1) do
+      worker.init_pool(state)
+    else
+      {:ok, state}
+    end
   end
 
   defp remove_async_ref(ref, state) do
