@@ -132,19 +132,13 @@ defmodule HTTP1Pool do
     receive_timeout = Keyword.get(opts, :receive_timeout, 15000)
 
     NimblePool.checkout!(pool, :checkout, fn {conn, pool} ->
-      try do
-        {kind, conn, result_or_error} =
-          with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil) do
-            receive_response([], conn, ref, %{}, receive_timeout)
-          end
+      {kind, conn, result_or_error} =
+        with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil) do
+          receive_response([], conn, ref, %{}, receive_timeout)
+        end
 
-        {:ok, conn} = Mint.HTTP1.controlling_process(conn, pool)
-        {{kind, result_or_error}, conn}
-      catch
-        kind, reason ->
-          _ = Mint.HTTP1.close(conn)
-          :erlang.raise(kind, reason, __STACKTRACE__)
-      end
+      {:ok, conn} = Mint.HTTP1.controlling_process(conn, pool)
+      {{kind, result_or_error}, conn}
     end, pool_timeout)
   end
 
