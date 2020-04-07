@@ -133,13 +133,22 @@ defmodule HTTP1Pool do
 
     NimblePool.checkout!(pool, :checkout, fn {conn, pool} ->
       {kind, conn, result_or_error} =
-        with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil) do
-          receive_response([], conn, ref, %{}, receive_timeout)
+        with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil),
+             {:ok, conn, result} <- receive_response([], conn, ref, %{}, receive_timeout) do
+          {{:ok, result}, controlling_process(conn, pool)}
         end
 
-      {:ok, conn} = Mint.HTTP1.controlling_process(conn, pool)
       {{kind, result_or_error}, conn}
     end, pool_timeout)
+  end
+
+  defp controlling_process(conn, pool) do
+    if Mint.HTTP1.open?(conn) do
+      {:ok, conn} = Mint.HTTP1.controlling_process(conn, pool)
+      conn
+    else
+      conn
+    end
   end
 
   defp receive_response([], conn, ref, response, timeout) do
