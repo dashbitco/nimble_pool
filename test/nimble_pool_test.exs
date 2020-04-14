@@ -643,6 +643,52 @@ defmodule NimblePoolTest do
              end) ==
                :result
     end
+
+    test "blocks until min_ready workers have initialized" do
+      pool_size = 10
+      min_ready = 5
+      sleep = 50
+
+      parent = self()
+
+      async_init =
+        async_init(fn ->
+          Process.sleep(sleep)
+          send(parent, :ready)
+        end)
+
+      start = System.monotonic_time(:millisecond)
+
+      pool =
+        stateless_pool!(
+          [
+            init: async_init,
+            handle_checkout: fn :checkout, _from, next -> {:ok, [], next} end,
+            handle_checkin: fn _, _from, next -> {:ok, next} end,
+            terminate: fn _, _ -> :ok end
+          ],
+          min_ready: min_ready,
+          pool_size: pool_size
+        )
+
+      blocked_for = System.monotonic_time(:millisecond) - start
+      assert blocked_for >= sleep
+
+      for _ <- 1..min_ready do
+        assert_receive :ready
+      end
+
+      refute_received :ready
+
+      assert :result ==
+               NimblePool.checkout!(pool, :checkout, fn state ->
+                 {:result, state}
+               end)
+
+      for _ <- (min_ready + 1)..pool_size do
+        assert_receive :ready
+      end
+    end
   end
 
   describe "remove" do

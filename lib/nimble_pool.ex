@@ -138,10 +138,14 @@ defmodule NimblePool do
 
     * `:pool_size - how many workers in the pool. Defaults to 10.
 
+    * `:min_ready` - how many workers must have initialized before the pool
+    completes initialization, even if they have an async init callback? Defaults to 0.
+
   """
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
+    {min_ready, opts} = Keyword.pop(opts, :min_ready, 0)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -151,7 +155,13 @@ defmodule NimblePool do
       raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
     end
 
-    GenServer.start_link(__MODULE__, {worker, arg, pool_size}, opts)
+    unless min_ready <= pool_size do
+      raise ArgumentError,
+            "min_ready must be less than or equal to pool_size, got: #{inspect(pool_size)}"
+    end
+
+    worker_opts = %{size: pool_size, min_ready: min_ready}
+    GenServer.start_link(__MODULE__, {worker, arg, worker_opts}, opts)
   end
 
   @doc """
@@ -252,13 +262,17 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size} = init_args) do
+  def init({worker, arg, pool_opts} = init_args) do
     Process.flag(:trap_exit, true)
 
     with :ok <- do_init_pool(init_args) do
       {resources, async} =
-        Enum.reduce(1..pool_size, {:queue.new(), %{}}, fn _, {resources, async} ->
-          init_worker(worker, arg, resources, async)
+        Enum.reduce(1..pool_opts.size, {:queue.new(), %{}}, fn i, {resources, async} ->
+          if pool_opts.min_ready >= i do
+            force_init_worker(worker, arg, resources, async)
+          else
+            init_worker(worker, arg, resources, async)
+          end
         end)
 
       state = %{
@@ -518,13 +532,25 @@ defmodule NimblePool do
   end
 
   defp init_worker(worker, arg, resources, async) do
+    do_init_worker(worker, arg, resources, async, fn fun, resources, async ->
+      %{ref: ref, pid: pid} = Task.Supervisor.async(NimblePool.TaskSupervisor, fun)
+      {resources, async |> Map.put(ref, pid) |> Map.put(pid, ref)}
+    end)
+  end
+
+  defp force_init_worker(worker, arg, resources, async) do
+    do_init_worker(worker, arg, resources, async, fn fun, resources, async ->
+      {:queue.in(fun.(), resources), async}
+    end)
+  end
+
+  defp do_init_worker(worker, arg, resources, async, handle_async_fun) do
     case apply_callback(worker, :init, [arg]) do
       {:ok, worker_state} ->
         {:queue.in(worker_state, resources), async}
 
       {:async, fun} when is_function(fun, 0) ->
-        %{ref: ref, pid: pid} = Task.Supervisor.async(NimblePool.TaskSupervisor, fun)
-        {resources, async |> Map.put(ref, pid) |> Map.put(pid, ref)}
+        handle_async_fun.(fun, resources, async)
 
       {:remove, _reason} ->
         send(self(), {__MODULE__, :init})
