@@ -443,7 +443,7 @@ defmodule NimblePool do
         {:noreply, state}
 
       %{} ->
-        {:noreply, state}
+        exit(:unexpected_remove)
     end
   end
 
