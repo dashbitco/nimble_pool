@@ -193,7 +193,7 @@ defmodule NimblePool do
     end
 
     ref = Process.monitor(pid)
-    send_call(pid, ref, {:checkout, command})
+    send_call(pid, ref, {:checkout, command, deadline(timeout)})
 
     receive do
       {^ref, worker_client_state} ->
@@ -201,7 +201,8 @@ defmodule NimblePool do
           function.(worker_client_state)
         catch
           kind, reason ->
-            send_cancel(pid, ref, kind)
+            send(pid, {__MODULE__, ref, kind})
+            Process.demonitor(ref, [:flush])
             :erlang.raise(kind, reason, __STACKTRACE__)
         else
           {result, worker_client_state} ->
@@ -216,10 +217,16 @@ defmodule NimblePool do
         exit!(reason, :checkout, [pool])
     after
       timeout ->
-        send_cancel(pid, ref, :timeout)
+        Process.demonitor(ref, [:flush])
         exit!(:timeout, :checkout, [pool])
     end
   end
+
+  defp deadline(timeout) when is_integer(timeout) do
+    System.monotonic_time() + System.convert_time_unit(timeout, :millisecond, :native)
+  end
+
+  defp deadline(:infinity), do: :infinity
 
   defp get_node({_, node}), do: node
   defp get_node(pid) when is_pid(pid), do: node(pid)
@@ -228,11 +235,6 @@ defmodule NimblePool do
     # Auto-connect is asynchronous. But we still use :noconnect to make sure
     # we send on the monitored connection, and not trigger a new auto-connect.
     Process.send(pid, {:"$gen_call", {self(), ref}, message}, [:noconnect])
-  end
-
-  defp send_cancel(pid, ref, reason) do
-    send(pid, {__MODULE__, ref, reason})
-    Process.demonitor(ref, [:flush])
   end
 
   defp checkin!(pid, ref, worker_client_state, timeout) do
@@ -290,13 +292,13 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_call({:checkout, command}, {pid, ref} = from, state) do
+  def handle_call({:checkout, command, deadline}, {pid, ref} = from, state) do
     %{requests: requests, monitors: monitors} = state
     mon_ref = Process.monitor(pid)
-    requests = Map.put(requests, ref, {pid, mon_ref, :command, command})
+    requests = Map.put(requests, ref, {pid, mon_ref, :command, command, deadline})
     monitors = Map.put(monitors, mon_ref, ref)
     state = %{state | requests: requests, monitors: monitors}
-    {:noreply, maybe_checkout(command, mon_ref, from, state)}
+    {:noreply, maybe_checkout(command, mon_ref, deadline, from, state)}
   end
 
   @impl true
@@ -425,7 +427,7 @@ defmodule NimblePool do
 
     case requests do
       # Exited or timed out before we could serve it
-      %{^ref => {_, mon_ref, :command, _}} ->
+      %{^ref => {_, mon_ref, :command, _, _}} ->
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
@@ -473,8 +475,8 @@ defmodule NimblePool do
       {{:value, {pid, ref}}, queue} ->
         case requests do
           # The request still exists, so we are good to go
-          %{^ref => {^pid, mon_ref, :command, command}} ->
-            maybe_checkout(command, mon_ref, {pid, ref}, %{state | queue: queue})
+          %{^ref => {^pid, mon_ref, :command, command, deadline}} ->
+            maybe_checkout(command, mon_ref, deadline, {pid, ref}, %{state | queue: queue})
 
           # It should never happen
           %{^ref => _} ->
@@ -490,34 +492,47 @@ defmodule NimblePool do
     end
   end
 
-  defp maybe_checkout(command, mon_ref, {pid, ref} = from, state) do
+  defp maybe_checkout(command, mon_ref, deadline, {pid, ref} = from, state) do
     %{resources: resources, requests: requests, worker: worker, queue: queue} = state
 
-    case :queue.out(resources) do
-      {{:value, worker_server_state}, resources} ->
-        case apply_callback(worker, :handle_checkout, [command, from, worker_server_state]) do
-          {:ok, worker_client_state, worker_server_state} ->
-            GenServer.reply({pid, ref}, worker_client_state)
-            requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
-            %{state | resources: resources, requests: requests}
+    if past_deadline?(deadline) do
+      requests = Map.delete(state.requests, ref)
+      monitors = Map.delete(state.monitors, mon_ref)
+      Process.demonitor(mon_ref, [:flush])
+      maybe_checkout(%{state | requests: requests, monitors: monitors})
+    else
+      case :queue.out(resources) do
+        {{:value, worker_server_state}, resources} ->
+          case apply_callback(worker, :handle_checkout, [command, from, worker_server_state]) do
+            {:ok, worker_client_state, worker_server_state} ->
+              GenServer.reply({pid, ref}, worker_client_state)
+              requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
+              %{state | resources: resources, requests: requests}
 
-          {:remove, reason} ->
-            :ok = remove(reason, worker_server_state, state)
-            maybe_checkout(command, mon_ref, from, %{state | resources: resources})
+            {:remove, reason} ->
+              :ok = remove(reason, worker_server_state, state)
+              maybe_checkout(command, mon_ref, deadline, from, %{state | resources: resources})
 
-          other ->
-            raise """
-            unexpected return from #{inspect(worker)}.handle_checkout/3.
+            other ->
+              raise """
+              unexpected return from #{inspect(worker)}.handle_checkout/3.
 
-            Expected: {:ok, client_state, server_state} | {:remove, reason}
-            Got: #{inspect(other)}
-            """
-        end
+              Expected: {:ok, client_state, server_state} | {:remove, reason}
+              Got: #{inspect(other)}
+              """
+          end
 
-      {:empty, _} ->
-        %{state | queue: :queue.in(from, queue)}
+        {:empty, _} ->
+          %{state | queue: :queue.in(from, queue)}
+      end
     end
   end
+
+  defp past_deadline?(deadline) when is_integer(deadline) do
+    System.monotonic_time() >= deadline
+  end
+
+  defp past_deadline?(_), do: false
 
   defp remove(reason, worker_server_state, %{worker: worker}) do
     maybe_terminate(worker, reason, worker_server_state)
