@@ -271,7 +271,7 @@ defmodule NimblePoolTest do
       assert_receive {:terminate, :shutdown}
     end
 
-    test "restarts worker on client timeout during checkout" do
+    test "does not restart worker on client timeout during checkout" do
       parent = self()
 
       pool =
@@ -296,19 +296,15 @@ defmodule NimblePoolTest do
 
       :sys.resume(pool)
 
-      # Terminated and restarted
-      assert_receive {:terminate, :timeout}
-      assert_receive :started
-      refute_received :started
-
       # Do a proper checkout now
       assert NimblePool.checkout!(pool, :checkout, fn :client_state_out ->
                {:result, :client_state_in}
              end) == :result
 
-      # Assert down from failed checkout! did not leak
+      # Did not have to start a new worker after the previous timeout
+      refute_received :started
+
       NimblePool.stop(pool, :shutdown)
-      refute_received {:DOWN, _, _, _, _}
       assert_receive {:terminate, :shutdown}
     end
 
