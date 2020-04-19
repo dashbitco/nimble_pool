@@ -175,24 +175,6 @@ defmodule NimblePoolTest do
                {:killed, {NimblePool, :checkout, [pool]}}
     end
 
-    test "exits when pool terminates on checkin" do
-      Process.flag(:trap_exit, true)
-
-      pool =
-        stateless_pool!(
-          init: fn next -> {:ok, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, _next -> Process.exit(self(), :kill) end
-        )
-
-      assert catch_exit(
-               NimblePool.checkout!(pool, :checkout, fn :client_state_out ->
-                 {:result, :client_state_in}
-               end)
-             ) ==
-               {:killed, {NimblePool, :checkin, [pool]}}
-    end
-
     test "restarts worker on client throw/error/exit during checkout" do
       parent = self()
 
@@ -305,53 +287,6 @@ defmodule NimblePoolTest do
       refute_received :started
 
       NimblePool.stop(pool, :shutdown)
-      assert_receive {:terminate, :shutdown}
-    end
-
-    test "does not restart worker on client timeout during checkin" do
-      parent = self()
-
-      pool =
-        stateless_pool!(
-          init: fn next -> send(parent, :started) && {:ok, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
-          handle_checkout: fn :checkout2, _from, next -> {:ok, :client_state_out2, next} end,
-          handle_checkin: fn :client_state_in2, _from, next -> {:ok, next} end,
-          terminate: fn reason, _ -> send(parent, {:terminate, reason}) end
-        )
-
-      # Started once
-      assert_receive :started
-      refute_received :started
-
-      assert catch_exit(
-               NimblePool.checkout!(
-                 pool,
-                 :checkout,
-                 fn :client_state_out ->
-                   # Suspend the pool, this will trigger a timeout but the message will be delivered
-                   :sys.suspend(pool)
-                   {:ok, :client_state_in}
-                 end,
-                 100
-               )
-             ) == {:timeout, {NimblePool, :checkin, [pool]}}
-
-      :sys.resume(pool)
-
-      # Terminated and restarted
-      refute_received {:terminate, _}
-      refute_received :started
-
-      # Do a proper checkout now
-      assert NimblePool.checkout!(pool, :checkout2, fn :client_state_out2 ->
-               {:result, :client_state_in2}
-             end) == :result
-
-      # Assert down from failed checkin! did not leak
-      NimblePool.stop(pool, :shutdown)
-      refute_received {:DOWN, _, _, _, _}
       assert_receive {:terminate, :shutdown}
     end
 

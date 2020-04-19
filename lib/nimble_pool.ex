@@ -114,6 +114,8 @@ defmodule NimblePool do
   addition or `:restart` and `:shutdown` that control the
   "Child Specification".
   """
+  def child_spec(opts)
+
   def child_spec(opts) do
     {worker, _} = Keyword.fetch!(opts, :worker)
     {restart, opts} = Keyword.pop(opts, :restart, :permanent)
@@ -187,16 +189,17 @@ defmodule NimblePool do
 
     receive do
       {^ref, worker_client_state} ->
+        Process.demonitor(ref, [:flush])
+
         try do
           function.(worker_client_state)
         catch
           kind, reason ->
             send(pid, {__MODULE__, ref, kind})
-            Process.demonitor(ref, [:flush])
             :erlang.raise(kind, reason, __STACKTRACE__)
         else
           {result, worker_client_state} ->
-            checkin!(pid, ref, worker_client_state, timeout)
+            send(pid, {__MODULE__, self(), ref, worker_client_state})
             result
         end
 
@@ -225,26 +228,6 @@ defmodule NimblePool do
     # Auto-connect is asynchronous. But we still use :noconnect to make sure
     # we send on the monitored connection, and not trigger a new auto-connect.
     Process.send(pid, {:"$gen_call", {self(), ref}, message}, [:noconnect])
-  end
-
-  defp checkin!(pid, ref, worker_client_state, timeout) do
-    send_call(pid, ref, {:checkin, worker_client_state})
-
-    receive do
-      {^ref, :ok} ->
-        Process.demonitor(ref, [:flush])
-        :ok
-
-      {:DOWN, ^ref, _, _, :noconnection} ->
-        exit!({:nodedown, node(pid)}, :checkin, [pid])
-
-      {:DOWN, ^ref, _, _, reason} ->
-        exit!(reason, :checkin, [pid])
-    after
-      timeout ->
-        Process.demonitor(ref, [:flush])
-        exit!(:timeout, :checkin, [pid])
-    end
   end
 
   defp exit!(reason, fun, args) do
@@ -288,20 +271,18 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_call({:checkin, worker_client_state}, {pid, ref} = from, state) do
+  def handle_info({__MODULE__, pid, ref, worker_client_state}, state) do
     %{requests: requests, resources: resources, worker: worker, monitors: monitors} = state
 
     case requests do
       %{^ref => {^pid, mon_ref, :state, worker_server_state}} ->
         checkin =
           if function_exported?(worker, :handle_checkin, 3) do
-            args = [worker_client_state, from, worker_server_state]
+            args = [worker_client_state, {pid, ref}, worker_server_state]
             apply_callback(worker, :handle_checkin, args)
           else
             {:ok, worker_server_state}
           end
-
-        GenServer.reply(from, :ok)
 
         resources =
           case checkin do
@@ -354,6 +335,16 @@ defmodule NimblePool do
   end
 
   @impl true
+  def handle_info({:EXIT, pid, _reason} = exit, state) do
+    %{async: async} = state
+
+    case async do
+      %{^pid => _} -> {:noreply, %{state | async: Map.delete(async, pid)}}
+      %{} -> maybe_handle_info(exit, state)
+    end
+  end
+
+  @impl true
   def handle_info({ref, worker_state} = reply, state) when is_reference(ref) do
     %{async: async, resources: resources} = state
 
@@ -367,16 +358,6 @@ defmodule NimblePool do
 
       %{} ->
         maybe_handle_info(reply, state)
-    end
-  end
-
-  @impl true
-  def handle_info({:EXIT, pid, _reason} = exit, state) do
-    %{async: async} = state
-
-    case async do
-      %{^pid => _} -> {:noreply, %{state | async: Map.delete(async, pid)}}
-      %{} -> maybe_handle_info(exit, state)
     end
   end
 
