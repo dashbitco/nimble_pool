@@ -20,6 +20,10 @@ The downside of NimblePool is that, because all resources are under a single pro
 
 NimblePool may not be a good option to manage processes. Also avoid using NimblePool to manage resources that support multiplexing, such as HTTP 2 connections (in fact, pools are not a good option to manage resources with multiplexing in general).
 
+## Callbacks
+
+NimblePool has two types of callbacks. Worker callbacks and pool callbacaks. The worker callbacks configure the behaviour of each worker, such as initialization, checkin and checkout. The pool callbacks configure general pool behaviour, such as initialization, and potentially queueing and dequeuing in the future.
+
 ## Examples
 
 To use `NimblePool`, you must define a module that implements the pool worker logic, outlined in the `NimblePool` behaviour.
@@ -78,10 +82,10 @@ defmodule PortPool do
   end
 
   @impl NimblePool
-  def init(:cat) do
+  def init_worker(:cat = pool_state) do
     path = System.find_executable("cat")
     port = Port.open({:spawn_executable, path}, [:binary, args: ["-"]])
-    {:ok, port}
+    {:ok, port, pool_state}
   end
 
   @impl NimblePool
@@ -99,15 +103,16 @@ defmodule PortPool do
 
   @impl NimblePool
   # On terminate, effectively close it
-  def terminate(_reason, port) do
+  def terminate_worker(_reason, port, pool_state) do
     send(port, {self(), :close})
+    {:ok, pool_state}
   end
 end
 ```
 
 ### HTTP1-based example
 
-The pool below uses [Mint](https://hexdocs.pm/mint) for HTTP1 connections.
+The pool below uses [Mint](https://hexdocs.pm/mint) for HTTP1 connections. It establishes connections eagerly. A better approach may be to establish connections lazily on checkout, as done by [Finch](github.com/keathley/finch), which is built on top of Mint+NimbleOptions.
 
 ```elixir
 defmodule HTTP1Pool do
@@ -175,7 +180,7 @@ defmodule HTTP1Pool do
   end
 
   @impl NimblePool
-  def init({scheme, host, port}) do
+  def init_worker({scheme, host, port} = pool_state) do
     parent = self()
 
     async = fn ->
@@ -185,7 +190,7 @@ defmodule HTTP1Pool do
       conn
     end
 
-    {:async, async}
+    {:async, async, pool_state}
   end
 
   @impl NimblePool
@@ -222,8 +227,9 @@ defmodule HTTP1Pool do
   @impl NimblePool
   # On terminate, effectively close it.
   # This will succeed even if it was already closed or if we don't own it.
-  def terminate(_reason, conn) do
+  def terminate(_reason, conn, pool_state) do
     Mint.HTTP1.close(conn)
+    {:ok, pool_state}
   end
 end
 ```
