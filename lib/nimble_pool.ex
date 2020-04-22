@@ -202,18 +202,18 @@ defmodule NimblePool do
     send_call(pid, ref, {:checkout, command, deadline(timeout)})
 
     receive do
-      {^ref, worker_client_state} ->
+      {^ref, client_state} ->
         Process.demonitor(ref, [:flush])
 
         try do
-          function.({pid, ref}, worker_client_state)
+          function.({pid, ref}, client_state)
         catch
           kind, reason ->
             send(pid, {__MODULE__, :cancel, ref, kind})
             :erlang.raise(kind, reason, __STACKTRACE__)
         else
-          {result, worker_client_state} ->
-            send(pid, {__MODULE__, :checkin, ref, worker_client_state})
+          {result, client_state} ->
+            send(pid, {__MODULE__, :checkin, ref, client_state})
             result
         end
 
@@ -238,8 +238,8 @@ defmodule NimblePool do
   checking the state in, which is handy when transferring
   resources that requires two steps.
   """
-  def precheckin({pid, ref}, worker_client_state) do
-    send(pid, {__MODULE__, :precheckin, ref, worker_client_state})
+  def precheckin({pid, ref}, worker_state) do
+    send(pid, {__MODULE__, :precheckin, ref, worker_state})
   end
 
   defp deadline(timeout) when is_integer(timeout) do
