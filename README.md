@@ -56,7 +56,7 @@ defmodule PortPool do
     pool_timeout = Keyword.get(opts, :pool_timeout, 5000)
     receive_timeout = Keyword.get(opts, :receive_timeout, 15000)
 
-    NimblePool.checkout!(pool, :checkout, fn {port, pool} ->
+    NimblePool.checkout!(pool, :checkout, fn _from, port ->
       send(port, {self(), {:command, command}})
 
       receive do
@@ -92,7 +92,7 @@ defmodule PortPool do
   # Transfer the port to the caller
   def handle_checkout(:checkout, {pid, _}, port) do
     send(port, {self(), {:connect, pid}})
-    {:ok, {port, self()}, port}
+    {:ok, port, port}
   end
 
   @impl NimblePool
@@ -136,7 +136,7 @@ defmodule HTTP1Pool do
     pool_timeout = Keyword.get(opts, :pool_timeout, 5000)
     receive_timeout = Keyword.get(opts, :receive_timeout, 15000)
 
-    NimblePool.checkout!(pool, :checkout, fn {conn, pool} ->
+    NimblePool.checkout!(pool, :checkout, fn _from, conn ->
       {kind, conn, result_or_error} =
         with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil),
              {:ok, conn, result} <- receive_response([], conn, ref, %{}, receive_timeout) do
@@ -199,7 +199,7 @@ defmodule HTTP1Pool do
   def handle_checkout(:checkout, {pid, _}, conn) do
     with {:ok, conn} <- Mint.HTTP1.set_mode(conn, :passive),
          {:ok, conn} <- Mint.HTTP1.controlling_process(conn, pid) do
-      {:ok, {conn, self()}, conn}
+      {:ok, conn, conn}
     else
       _ -> {:remove, :closed}
     end

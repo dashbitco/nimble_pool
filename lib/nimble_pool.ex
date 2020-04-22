@@ -180,15 +180,17 @@ defmodule NimblePool do
 
   It expects a command, which will be passed to the `c:handle_checkout/3`
   callback. The `c:handle_checkout/3` callback will return a client state,
-  which is given to the `function`. The `function` must return a two-element
-  tuple, where the first element is the function return value, and the second
-  element is the updated `client_state`, which will be given as the first
-  argument to `c:handle_checkin/3`.
+  which is given to the `function`.
+
+  The `function` receives two arguments, the pool reference and must return
+  a two-element tuple, where the first element is the function return value,
+  and the second element is the updated `client_state`, which will be given
+  as the first argument to `c:handle_checkin/3`.
 
   `checkout!` also has an optional `timeout` value, this value will be applied
-  to checkout and checkin operations independently.
+  to checkout operation itself. `checkin` happens asynchronously.
   """
-  def checkout!(pool, command, function, timeout \\ 5_000) when is_function(function, 1) do
+  def checkout!(pool, command, function, timeout \\ 5_000) when is_function(function, 2) do
     # Reimplementation of gen.erl call to avoid multiple monitors.
     pid = GenServer.whereis(pool)
 
@@ -204,14 +206,14 @@ defmodule NimblePool do
         Process.demonitor(ref, [:flush])
 
         try do
-          function.(worker_client_state)
+          function.({pid, ref}, worker_client_state)
         catch
           kind, reason ->
-            send(pid, {__MODULE__, ref, kind})
+            send(pid, {__MODULE__, :cancel, ref, kind})
             :erlang.raise(kind, reason, __STACKTRACE__)
         else
           {result, worker_client_state} ->
-            send(pid, {__MODULE__, self(), ref, worker_client_state})
+            send(pid, {__MODULE__, :checkin, ref, worker_client_state})
             result
         end
 
@@ -225,6 +227,19 @@ defmodule NimblePool do
         Process.demonitor(ref, [:flush])
         exit!(:timeout, :checkout, [pool])
     end
+  end
+
+  @doc """
+  Pre-checks the given `worker_state` in.
+
+  This must be called inside the `checkout!` callback.
+
+  This is useful to update the pool state before effectively
+  checking the state in, which is handy when transferring
+  resources that requires two steps.
+  """
+  def precheckin({pid, ref}, worker_client_state) do
+    send(pid, {__MODULE__, :precheckin, ref, worker_client_state})
   end
 
   defp deadline(timeout) when is_integer(timeout) do
@@ -285,11 +300,25 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_info({__MODULE__, pid, ref, worker_client_state}, state) do
+  def handle_info({__MODULE__, :precheckin, ref, worker_client_state}, state) do
+    %{requests: requests} = state
+
+    case requests do
+      %{^ref => {pid, mon_ref, :state, _worker_server_state}} ->
+        requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_client_state})
+        {:noreply, %{state | requests: requests}}
+
+      %{} ->
+        exit(:unexpected_precheckin)
+    end
+  end
+
+  @impl true
+  def handle_info({__MODULE__, :checkin, ref, worker_client_state}, state) do
     %{requests: requests, resources: resources, worker: worker, monitors: monitors} = state
 
     case requests do
-      %{^ref => {^pid, mon_ref, :state, worker_server_state}} ->
+      %{^ref => {pid, mon_ref, :state, worker_server_state}} ->
         checkin =
           if function_exported?(worker, :handle_checkin, 3) do
             args = [worker_client_state, {pid, ref}, worker_server_state]
@@ -320,7 +349,7 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_info({__MODULE__, ref, reason}, state) do
+  def handle_info({__MODULE__, :cancel, ref, reason}, state) do
     cancel_request_ref(ref, reason, state)
   end
 
