@@ -150,7 +150,7 @@ defmodule NimblePool do
       module that implements the `NimblePool` behaviour and the worker
       initial argument. This argument is required.
 
-    * `:pool_size - how many workers in the pool. Defaults to 10.
+    * `:pool_size` - how many workers in the pool. Defaults to 10.
 
   """
   def start_link(opts) do
