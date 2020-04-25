@@ -1,13 +1,20 @@
 defmodule NimblePool.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @url "https://github.com/dashbitco/nimble_pool"
+
   def project do
     [
       app: :nimble_pool,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.7",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      name: "NimblePool",
+      description: "A tiny resource-pool implementation",
+      deps: deps(),
+      docs: docs(),
+      package: package()
     ]
   end
 
@@ -20,5 +27,21 @@ defmodule NimblePool.MixProject do
 
   defp deps do
     []
+  end
+
+  defp docs do
+    [
+      main: "NimblePool",
+      source_ref: "v#{@version}",
+      source_url: @url
+    ]
+  end
+
+  defp package do
+    %{
+      licenses: ["Apache 2"],
+      maintainers: ["José Valim"],
+      links: %{"GitHub" => @url}
+    }
   end
 end
