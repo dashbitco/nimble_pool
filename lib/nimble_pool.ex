@@ -91,6 +91,26 @@ defmodule NimblePool do
               {:ok, worker_state} | {:remove, user_reason}
 
   @doc """
+  Executed by the pool, whenever a request to checkout a worker is enqueued.
+
+  The implementation should be very fast, as it will block the pool.
+  Useful for tracking load on the pool. It must return the pool_state.
+
+  This callback is optional.
+  """
+  @callback handle_enqueue(pool_state) :: pool_state
+
+  @doc """
+  Executed by the pool, whenever a request to checkout a worker is dequeued.
+
+  The implementation should be very fast, as it will block the pool.
+  Useful for tracking load on the pool. It must return the pool_state.
+
+  This callback is optional.
+  """
+  @callback handle_dequeue(pool_state) :: pool_state
+
+  @doc """
   Terminates a worker.
 
   This callback is invoked with `:DOWN` whenever the client
@@ -117,7 +137,12 @@ defmodule NimblePool do
             ) ::
               {:ok, pool_state}
 
-  @optional_callbacks init_pool: 1, handle_checkin: 3, handle_info: 2, terminate_worker: 3
+  @optional_callbacks init_pool: 1,
+                      handle_checkin: 3,
+                      handle_info: 2,
+                      handle_enqueue: 1,
+                      handle_dequeue: 1,
+                      terminate_worker: 3
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -296,6 +321,7 @@ defmodule NimblePool do
     requests = Map.put(requests, ref, {pid, mon_ref, :command, command, deadline})
     monitors = Map.put(monitors, mon_ref, ref)
     state = %{state | requests: requests, monitors: monitors}
+    state = handle_enqueue(state)
     {:noreply, maybe_checkout(command, mon_ref, deadline, from, state)}
   end
 
@@ -341,6 +367,8 @@ defmodule NimblePool do
         requests = Map.delete(requests, ref)
 
         state = %{state | requests: requests, monitors: monitors, resources: resources}
+        state = handle_dequeue(state)
+
         {:noreply, maybe_checkout(state)}
 
       %{} ->
@@ -443,7 +471,8 @@ defmodule NimblePool do
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
-        {:noreply, %{state | requests: requests, monitors: monitors}}
+        state = %{state | requests: requests, monitors: monitors}
+        {:noreply, handle_dequeue(state)}
 
       # Exited or errored during client processing
       %{^ref => {_, mon_ref, :state, worker_server_state}} ->
@@ -452,7 +481,7 @@ defmodule NimblePool do
         requests = Map.delete(requests, ref)
         state = remove(reason, worker_server_state, state)
         state = %{state | requests: requests, monitors: monitors, resources: resources}
-        {:noreply, state}
+        {:noreply, handle_dequeue(state)}
 
       %{} ->
         exit(:unexpected_remove)
@@ -634,4 +663,20 @@ defmodule NimblePool do
 
   defp crash_reason(:throw, value), do: {:nocatch, value}
   defp crash_reason(_, value), do: value
+
+  defp handle_enqueue(%{worker: worker} = pool_state) do
+    if function_exported?(worker, :handle_enqueue, 1) do
+      apply_worker_callback(worker, :handle_enqueue, [pool_state])
+    else
+      pool_state
+    end
+  end
+
+  defp handle_dequeue(%{worker: worker} = pool_state) do
+    if function_exported?(worker, :handle_dequeue, 1) do
+      apply_worker_callback(worker, :handle_dequeue, [pool_state])
+    else
+      pool_state
+    end
+  end
 end

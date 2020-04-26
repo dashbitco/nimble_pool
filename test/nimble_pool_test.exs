@@ -955,4 +955,36 @@ defmodule NimblePoolTest do
       assert_drained agent
     end
   end
+
+  describe "handle_enqueue & handle_dequeue" do
+    defmodule PoolWithHandleEnqueueAndDequeue do
+      @behaviour NimblePool
+
+      def init_worker(from), do: {:ok, from, from}
+
+      def handle_checkout(_command, from, worker_state) do
+        {:ok, from, worker_state}
+      end
+
+      def handle_enqueue(%{state: {pid, ref}} = state) do
+        send(pid, {ref, :enqueued})
+        state
+      end
+
+      def handle_dequeue(%{state: {pid, ref}} = state) do
+        send(pid, {ref, :dequeued})
+        state
+      end
+    end
+
+    test "executes handle_enqueue and handle_dequeue callbacks when defined" do
+      parent = self()
+      ref = make_ref()
+      pool = start_pool!(PoolWithHandleEnqueueAndDequeue, {parent, ref}, [])
+      NimblePool.checkout!(pool, :checkout, fn _, _ -> {:ok, :ok} end)
+
+      assert_receive {^ref, :enqueued}
+      assert_receive {^ref, :dequeued}
+    end
+  end
 end
