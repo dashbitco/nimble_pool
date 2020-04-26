@@ -98,7 +98,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
-  @callback handle_enqueue(pool_state) :: pool_state
+  @callback handle_enqueue(command :: term, pool_state) :: {command :: term, pool_state}
 
   @doc """
   Executed by the pool, whenever a request to checkout a worker is dequeued.
@@ -108,7 +108,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
-  @callback handle_dequeue(pool_state) :: pool_state
+  @callback handle_dequeue(command :: term, pool_state) :: pool_state
 
   @doc """
   Terminates a worker.
@@ -140,8 +140,8 @@ defmodule NimblePool do
   @optional_callbacks init_pool: 1,
                       handle_checkin: 3,
                       handle_info: 2,
-                      handle_enqueue: 1,
-                      handle_dequeue: 1,
+                      handle_enqueue: 2,
+                      handle_dequeue: 2,
                       terminate_worker: 3
 
   @doc """
@@ -316,12 +316,12 @@ defmodule NimblePool do
 
   @impl true
   def handle_call({:checkout, command, deadline}, {pid, ref} = from, state) do
+    {command, state} = handle_enqueue(command, state)
     %{requests: requests, monitors: monitors} = state
     mon_ref = Process.monitor(pid)
     requests = Map.put(requests, ref, {pid, mon_ref, :command, command, deadline})
     monitors = Map.put(monitors, mon_ref, ref)
     state = %{state | requests: requests, monitors: monitors}
-    state = handle_enqueue(state)
     {:noreply, maybe_checkout(command, mon_ref, deadline, from, state)}
   end
 
@@ -330,8 +330,8 @@ defmodule NimblePool do
     %{requests: requests} = state
 
     case requests do
-      %{^ref => {pid, mon_ref, :state, _worker_server_state}} ->
-        requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_client_state})
+      %{^ref => {pid, mon_ref, :state, command, _worker_server_state}} ->
+        requests = Map.put(requests, ref, {pid, mon_ref, :state, command, worker_client_state})
         {:noreply, %{state | requests: requests}}
 
       %{} ->
@@ -344,7 +344,7 @@ defmodule NimblePool do
     %{requests: requests, resources: resources, worker: worker, monitors: monitors} = state
 
     case requests do
-      %{^ref => {pid, mon_ref, :state, worker_server_state}} ->
+      %{^ref => {pid, mon_ref, :state, command, worker_server_state}} ->
         checkin =
           if function_exported?(worker, :handle_checkin, 3) do
             args = [worker_client_state, {pid, ref}, worker_server_state]
@@ -367,7 +367,7 @@ defmodule NimblePool do
         requests = Map.delete(requests, ref)
 
         state = %{state | requests: requests, monitors: monitors, resources: resources}
-        state = handle_dequeue(state)
+        state = handle_dequeue(command, state)
 
         {:noreply, maybe_checkout(state)}
 
@@ -467,21 +467,21 @@ defmodule NimblePool do
 
     case requests do
       # Exited or timed out before we could serve it
-      %{^ref => {_, mon_ref, :command, _, _}} ->
+      %{^ref => {_, mon_ref, :command, command, _}} ->
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
         state = %{state | requests: requests, monitors: monitors}
-        {:noreply, handle_dequeue(state)}
+        {:noreply, handle_dequeue(command, state)}
 
       # Exited or errored during client processing
-      %{^ref => {_, mon_ref, :state, worker_server_state}} ->
+      %{^ref => {_, mon_ref, :state, command, worker_server_state}} ->
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
         state = remove(reason, worker_server_state, state)
         state = %{state | requests: requests, monitors: monitors, resources: resources}
-        {:noreply, handle_dequeue(state)}
+        {:noreply, handle_dequeue(command, state)}
 
       %{} ->
         exit(:unexpected_remove)
@@ -548,7 +548,10 @@ defmodule NimblePool do
           case apply_worker_callback(worker, :handle_checkout, args) do
             {:ok, worker_client_state, worker_server_state} ->
               GenServer.reply({pid, ref}, worker_client_state)
-              requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
+
+              requests =
+                Map.put(requests, ref, {pid, mon_ref, :state, command, worker_server_state})
+
               %{state | resources: resources, requests: requests}
 
             {:remove, reason} ->
@@ -664,17 +667,17 @@ defmodule NimblePool do
   defp crash_reason(:throw, value), do: {:nocatch, value}
   defp crash_reason(_, value), do: value
 
-  defp handle_enqueue(%{worker: worker} = pool_state) do
-    if function_exported?(worker, :handle_enqueue, 1) do
-      apply_worker_callback(worker, :handle_enqueue, [pool_state])
+  defp handle_enqueue(command, %{worker: worker} = pool_state) do
+    if function_exported?(worker, :handle_enqueue, 2) do
+      apply_worker_callback(worker, :handle_enqueue, [command, pool_state])
     else
-      pool_state
+      {command, pool_state}
     end
   end
 
-  defp handle_dequeue(%{worker: worker} = pool_state) do
-    if function_exported?(worker, :handle_dequeue, 1) do
-      apply_worker_callback(worker, :handle_dequeue, [pool_state])
+  defp handle_dequeue(command, %{worker: worker} = pool_state) do
+    if function_exported?(worker, :handle_dequeue, 2) do
+      apply_worker_callback(worker, :handle_dequeue, [command, pool_state])
     else
       pool_state
     end

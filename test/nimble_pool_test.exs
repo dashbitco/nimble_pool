@@ -962,16 +962,16 @@ defmodule NimblePoolTest do
 
       def init_worker(from), do: {:ok, from, from}
 
-      def handle_checkout(_command, from, worker_state) do
+      def handle_checkout({:wrapped, _command}, from, worker_state) do
         {:ok, from, worker_state}
       end
 
-      def handle_enqueue(%{state: {pid, ref}} = state) do
+      def handle_enqueue(command, %{state: {pid, ref}} = state) do
         send(pid, {ref, :enqueued})
-        state
+        {{:wrapped, command}, state}
       end
 
-      def handle_dequeue(%{state: {pid, ref}} = state) do
+      def handle_dequeue({:wrapped, _command}, %{state: {pid, ref}} = state) do
         send(pid, {ref, :dequeued})
         state
       end
@@ -981,6 +981,7 @@ defmodule NimblePoolTest do
       parent = self()
       ref = make_ref()
       pool = start_pool!(PoolWithHandleEnqueueAndDequeue, {parent, ref}, [])
+
       NimblePool.checkout!(pool, :checkout, fn _, _ -> {:ok, :ok} end)
 
       assert_receive {^ref, :enqueued}
