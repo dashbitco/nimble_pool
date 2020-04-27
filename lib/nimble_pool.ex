@@ -108,7 +108,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
-  @callback handle_dequeue(command :: term, pool_state) :: pool_state
+  @callback handle_dequeue(maybe_wrapped_command :: term, pool_state) :: {:ok, command, pool_state} | {:skip, pool_state}
 
   @doc """
   Terminates a worker.
