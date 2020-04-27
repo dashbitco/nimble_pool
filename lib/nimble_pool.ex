@@ -229,6 +229,10 @@ defmodule NimblePool do
     send_call(pid, ref, {:checkout, command})
 
     receive do
+      {^ref, :skipped} ->
+        Process.demonitor(ref, [:flush])
+        exit!(:skipped, :checkout, [pool])
+
       {^ref, client_state} ->
         Process.demonitor(ref, [:flush])
 
@@ -327,7 +331,7 @@ defmodule NimblePool do
         {:noreply, maybe_checkout(command, mon_ref, from, state)}
 
       {:skip, state} ->
-        {:noreply, state}
+        {:reply, :skipped, state}
     end
   end
 
@@ -567,6 +571,7 @@ defmodule NimblePool do
         requests = Map.delete(state.requests, ref)
         monitors = Map.delete(state.monitors, mon_ref)
         Process.demonitor(mon_ref, [:flush])
+        GenServer.reply({pid, ref}, :skipped)
         %{state | requests: requests, monitors: monitors}
 
       {:empty, _} ->

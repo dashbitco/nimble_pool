@@ -961,35 +961,103 @@ defmodule NimblePoolTest do
   end
 
   describe "handle_enqueue & handle_dequeue" do
-    defmodule StatelessPoolWithHandleEnqueueAndDequeue do
-      @behaviour NimblePool
-
-      def init_worker(from), do: {:ok, from, from}
-
-      def handle_checkout({:wrapped, _command}, from, worker_state) do
-        {:ok, from, worker_state}
-      end
-
-      def handle_enqueue(command, %{state: {pid, ref}} = state) do
-        send(pid, {ref, :enqueued})
-        {:ok, {:wrapped, command}, state}
-      end
-
-      def handle_dequeue({:wrapped, _command}, %{state: {pid, ref}} = state) do
-        send(pid, {ref, :dequeued})
-        {:ok, state}
-      end
-    end
-
     test "executes handle_enqueue and handle_dequeue callbacks when defined" do
+      defmodule PoolWithHandleEnqueueAndDequeue do
+        @behaviour NimblePool
+
+        def init_worker(parent) do
+          {:ok, parent, parent}
+        end
+
+        def handle_checkout(_command, _from, parent) do
+          {:ok, parent, parent}
+        end
+
+        def handle_enqueue(command, pool_state) do
+          send(pool_state.state, :enqueued)
+          {:ok, command, pool_state}
+        end
+
+        def handle_dequeue(command, pool_state) do
+          send(pool_state.state, :dequeued)
+          {:ok, command, pool_state}
+        end
+      end
+
       parent = self()
-      ref = make_ref()
-      pool = start_pool!(StatelessPoolWithHandleEnqueueAndDequeue, {parent, ref}, [])
+      pool = start_pool!(PoolWithHandleEnqueueAndDequeue, parent, [])
 
       NimblePool.checkout!(pool, :checkout, fn _, _ -> {:ok, :ok} end)
 
-      assert_receive {^ref, :enqueued}
-      assert_receive {^ref, :dequeued}
+      assert_receive :enqueued
+      assert_receive :dequeued
+    end
+
+    test "checkout will not be called and worker will not restart if handle_enqueue returns :skip tuple" do
+      defmodule PoolThatSkipsOnEnqueue do
+        @behaviour NimblePool
+
+        def init_worker(parent) do
+          send(parent, :init_worker)
+          {:ok, parent, parent}
+        end
+
+        def handle_checkout(_command, _from, worker_state) do
+          flunk("handle_checkout/3 should be skipped")
+          {:ok, worker_state, worker_state}
+        end
+
+        def handle_enqueue(_command, parent) do
+          {:skip, parent}
+        end
+      end
+
+      parent = self()
+      pool = start_pool!(PoolThatSkipsOnEnqueue, parent, [])
+
+      assert_receive :init_worker
+
+      assert catch_exit(
+               NimblePool.checkout!(pool, :checkout, fn _ref, state -> {state, state} end)
+             ) ==
+               {:skipped, {NimblePool, :checkout, [pool]}}
+
+      refute_receive :init_worker
+    end
+
+    test "checkout will not be called and worker will not restart if handle_dequeue returns :skip tuple" do
+      defmodule PoolThatSkipsOnDequeue do
+        @behaviour NimblePool
+
+        def init_worker(parent) do
+          send(parent, :init_worker)
+          {:ok, parent, parent}
+        end
+
+        def handle_checkout(_command, _from, worker_state) do
+          flunk("handle_checkout/3 should be skipped")
+          {:ok, worker_state, worker_state}
+        end
+
+        def handle_enqueue(command, parent) do
+          {:ok, {:wrapped, command}, parent}
+        end
+
+        def handle_dequeue({:wrapped, _command}, parent) do
+          {:skip, parent}
+        end
+      end
+
+      parent = self()
+      pool = start_pool!(PoolThatSkipsOnDequeue, parent, [])
+      assert_receive :init_worker
+
+      assert catch_exit(
+               NimblePool.checkout!(pool, :checkout, fn _ref, state -> {state, state} end)
+             ) ==
+               {:skipped, {NimblePool, :checkout, [pool]}}
+
+      refute_receive :init_worker
     end
   end
 end
