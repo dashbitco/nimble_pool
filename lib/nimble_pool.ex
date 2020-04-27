@@ -538,7 +538,7 @@ defmodule NimblePool do
   defp maybe_checkout(command, mon_ref, {pid, ref} = from, state) do
     %{resources: resources, requests: requests, worker: worker, queue: queue} = state
 
-    with {:ok, state} <- handle_dequeue(command, state),
+    with {:ok, command, state} <- handle_dequeue(command, state),
          {{:value, worker_server_state}, resources} <- :queue.out(resources) do
       args = [command, from, worker_server_state]
 
@@ -674,7 +674,7 @@ defmodule NimblePool do
     if function_exported?(worker, :handle_dequeue, 2) do
       apply_worker_callback(worker, :handle_dequeue, [command, pool_state])
     else
-      {:ok, pool_state}
+      {:ok, command, pool_state}
     end
   end
 end
