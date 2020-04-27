@@ -93,8 +93,14 @@ defmodule NimblePool do
   @doc """
   Executed by the pool, whenever a request to checkout a worker is enqueued.
 
-  The implementation should be very fast, as it will block the pool.
-  Useful for tracking load on the pool. It must return the pool_state.
+  The `command` argument should be treated as an opaque value, but it can be
+  wrapped with some data to be used in `handle_dequeue/2`.
+
+  It must return either `{:ok, maybe_wrapped_command, pool_state}` or
+  `{:skip, pool_state}` if checkout is to be skipped.
+
+  Note this callback is synchronous and therefore will block the pool.
+  Avoid performing long work in here.
 
   This callback is optional.
   """
@@ -104,8 +110,15 @@ defmodule NimblePool do
   @doc """
   Executed by the pool, whenever a request to checkout a worker is dequeued.
 
-  The implementation should be very fast, as it will block the pool.
-  Useful for tracking load on the pool. It must return the pool_state.
+  It will receive the possibly wrapped command returned from `handle_enquue/2`.
+  If you choose to wrap the command in `handle_enquue/2`, you should unwrap it
+  here before returning it.
+
+  It must return either `{:ok, command, pool_state}` or
+  `{:skip, pool_state}` if checkout is to be skipped.
+
+  Note this callback is synchronous and therefore will block the pool.
+  Avoid performing long work in here.
 
   This callback is optional.
   """
