@@ -98,7 +98,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
-  @callback handle_enqueue(command :: term, pool_state) :: {command :: term, pool_state}
+  @callback handle_enqueue(command :: term, pool_state) :: {:ok, maybe_wrapped_command :: term, pool_state} | {:skip, pool_state}
 
   @doc """
   Executed by the pool, whenever a request to checkout a worker is dequeued.
