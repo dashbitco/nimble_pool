@@ -98,7 +98,8 @@ defmodule NimblePool do
 
   This callback is optional.
   """
-  @callback handle_enqueue(command :: term, pool_state) :: {:ok, maybe_wrapped_command :: term, pool_state} | {:skip, pool_state}
+  @callback handle_enqueue(command :: term, pool_state) ::
+              {:ok, maybe_wrapped_command :: term, pool_state} | {:skip, pool_state}
 
   @doc """
   Executed by the pool, whenever a request to checkout a worker is dequeued.
@@ -108,7 +109,8 @@ defmodule NimblePool do
 
   This callback is optional.
   """
-  @callback handle_dequeue(maybe_wrapped_command :: term, pool_state) :: {:ok, command, pool_state} | {:skip, pool_state}
+  @callback handle_dequeue(maybe_wrapped_command :: term, pool_state) ::
+              {:ok, command :: term, pool_state} | {:skip, pool_state}
 
   @doc """
   Terminates a worker.
@@ -224,7 +226,7 @@ defmodule NimblePool do
     end
 
     ref = Process.monitor(pid)
-    send_call(pid, ref, {:checkout, command, deadline(timeout)})
+    send_call(pid, ref, {:checkout, command})
 
     receive do
       {^ref, client_state} ->
@@ -234,7 +236,7 @@ defmodule NimblePool do
           function.({pid, ref}, client_state)
         catch
           kind, reason ->
-            send(pid, {__MODULE__, :cancel, ref, kind})
+            send_cancel(pid, ref, kind)
             :erlang.raise(kind, reason, __STACKTRACE__)
         else
           {result, client_state} ->
@@ -249,9 +251,14 @@ defmodule NimblePool do
         exit!(reason, :checkout, [pool])
     after
       timeout ->
-        Process.demonitor(ref, [:flush])
+        send_cancel(pid, ref, :timeout)
         exit!(:timeout, :checkout, [pool])
     end
+  end
+
+  defp send_cancel(pid, ref, reason) do
+    send(pid, {__MODULE__, :cancel, ref, reason})
+    Process.demonitor(ref, [:flush])
   end
 
   @doc """
@@ -266,12 +273,6 @@ defmodule NimblePool do
   def precheckin({pid, ref}, worker_state) do
     send(pid, {__MODULE__, :precheckin, ref, worker_state})
   end
-
-  defp deadline(timeout) when is_integer(timeout) do
-    System.monotonic_time() + System.convert_time_unit(timeout, :millisecond, :native)
-  end
-
-  defp deadline(:infinity), do: :infinity
 
   defp get_node({_, node}), do: node
   defp get_node(pid) when is_pid(pid), do: node(pid)
@@ -315,14 +316,19 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_call({:checkout, command, deadline}, {pid, ref} = from, state) do
-    {command, state} = handle_enqueue(command, state)
-    %{requests: requests, monitors: monitors} = state
-    mon_ref = Process.monitor(pid)
-    requests = Map.put(requests, ref, {pid, mon_ref, :command, command, deadline})
-    monitors = Map.put(monitors, mon_ref, ref)
-    state = %{state | requests: requests, monitors: monitors}
-    {:noreply, maybe_checkout(command, mon_ref, deadline, from, state)}
+  def handle_call({:checkout, command}, {pid, ref} = from, state) do
+    case handle_enqueue(command, state) do
+      {:ok, command, state} ->
+        %{requests: requests, monitors: monitors} = state
+        mon_ref = Process.monitor(pid)
+        requests = Map.put(requests, ref, {pid, mon_ref, :command, command})
+        monitors = Map.put(monitors, mon_ref, ref)
+        state = %{state | requests: requests, monitors: monitors}
+        {:noreply, maybe_checkout(command, mon_ref, from, state)}
+
+      {:skip, state} ->
+        {:noreply, state}
+    end
   end
 
   @impl true
@@ -330,8 +336,8 @@ defmodule NimblePool do
     %{requests: requests} = state
 
     case requests do
-      %{^ref => {pid, mon_ref, :state, command, _worker_server_state}} ->
-        requests = Map.put(requests, ref, {pid, mon_ref, :state, command, worker_client_state})
+      %{^ref => {pid, mon_ref, :state, _worker_server_state}} ->
+        requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_client_state})
         {:noreply, %{state | requests: requests}}
 
       %{} ->
@@ -344,7 +350,7 @@ defmodule NimblePool do
     %{requests: requests, resources: resources, worker: worker, monitors: monitors} = state
 
     case requests do
-      %{^ref => {pid, mon_ref, :state, command, worker_server_state}} ->
+      %{^ref => {pid, mon_ref, :state, worker_server_state}} ->
         checkin =
           if function_exported?(worker, :handle_checkin, 3) do
             args = [worker_client_state, {pid, ref}, worker_server_state]
@@ -367,8 +373,6 @@ defmodule NimblePool do
         requests = Map.delete(requests, ref)
 
         state = %{state | requests: requests, monitors: monitors, resources: resources}
-        state = handle_dequeue(command, state)
-
         {:noreply, maybe_checkout(state)}
 
       %{} ->
@@ -467,21 +471,20 @@ defmodule NimblePool do
 
     case requests do
       # Exited or timed out before we could serve it
-      %{^ref => {_, mon_ref, :command, command, _}} ->
+      %{^ref => {_, mon_ref, :command, _command}} ->
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
-        state = %{state | requests: requests, monitors: monitors}
-        {:noreply, handle_dequeue(command, state)}
+        {:noreply, %{state | requests: requests, monitors: monitors}}
 
       # Exited or errored during client processing
-      %{^ref => {_, mon_ref, :state, command, worker_server_state}} ->
+      %{^ref => {_, mon_ref, :state, worker_server_state}} ->
         Process.demonitor(mon_ref, [:flush])
         monitors = Map.delete(monitors, mon_ref)
         requests = Map.delete(requests, ref)
         state = remove(reason, worker_server_state, state)
         state = %{state | requests: requests, monitors: monitors, resources: resources}
-        {:noreply, handle_dequeue(command, state)}
+        {:noreply, state}
 
       %{} ->
         exit(:unexpected_remove)
@@ -515,8 +518,8 @@ defmodule NimblePool do
       {{:value, {pid, ref}}, queue} ->
         case requests do
           # The request still exists, so we are good to go
-          %{^ref => {^pid, mon_ref, :command, command, deadline}} ->
-            maybe_checkout(command, mon_ref, deadline, {pid, ref}, %{state | queue: queue})
+          %{^ref => {^pid, mon_ref, :command, command}} ->
+            maybe_checkout(command, mon_ref, {pid, ref}, %{state | queue: queue})
 
           # It should never happen
           %{^ref => _} ->
@@ -532,52 +535,44 @@ defmodule NimblePool do
     end
   end
 
-  defp maybe_checkout(command, mon_ref, deadline, {pid, ref} = from, state) do
+  defp maybe_checkout(command, mon_ref, {pid, ref} = from, state) do
     %{resources: resources, requests: requests, worker: worker, queue: queue} = state
 
-    if past_deadline?(deadline) do
-      requests = Map.delete(state.requests, ref)
-      monitors = Map.delete(state.monitors, mon_ref)
-      Process.demonitor(mon_ref, [:flush])
-      maybe_checkout(%{state | requests: requests, monitors: monitors})
-    else
-      case :queue.out(resources) do
-        {{:value, worker_server_state}, resources} ->
-          args = [command, from, worker_server_state]
+    with {:ok, state} <- handle_dequeue(command, state),
+         {{:value, worker_server_state}, resources} <- :queue.out(resources) do
+      args = [command, from, worker_server_state]
 
-          case apply_worker_callback(worker, :handle_checkout, args) do
-            {:ok, worker_client_state, worker_server_state} ->
-              GenServer.reply({pid, ref}, worker_client_state)
+      case apply_worker_callback(worker, :handle_checkout, args) do
+        {:ok, worker_client_state, worker_server_state} ->
+          GenServer.reply({pid, ref}, worker_client_state)
 
-              requests =
-                Map.put(requests, ref, {pid, mon_ref, :state, command, worker_server_state})
+          requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
 
-              %{state | resources: resources, requests: requests}
+          %{state | resources: resources, requests: requests}
 
-            {:remove, reason} ->
-              state = remove(reason, worker_server_state, state)
-              maybe_checkout(command, mon_ref, deadline, from, %{state | resources: resources})
+        {:remove, reason} ->
+          state = remove(reason, worker_server_state, state)
+          maybe_checkout(command, mon_ref, from, %{state | resources: resources})
 
-            other ->
-              raise """
-              unexpected return from #{inspect(worker)}.handle_checkout/3.
+        other ->
+          raise """
+          unexpected return from #{inspect(worker)}.handle_checkout/3.
 
-              Expected: {:ok, client_state, server_state} | {:remove, reason}
-              Got: #{inspect(other)}
-              """
-          end
-
-        {:empty, _} ->
-          %{state | queue: :queue.in(from, queue)}
+          Expected: {:ok, client_state, server_state} | {:remove, reason}
+          Got: #{inspect(other)}
+          """
       end
+    else
+      {:skip, state} ->
+        requests = Map.delete(state.requests, ref)
+        monitors = Map.delete(state.monitors, mon_ref)
+        Process.demonitor(mon_ref, [:flush])
+        %{state | requests: requests, monitors: monitors}
+
+      {:empty, _} ->
+        %{state | queue: :queue.in(from, queue)}
     end
   end
-
-  defp past_deadline?(deadline) when is_integer(deadline) do
-    System.monotonic_time() >= deadline
-  end
-
-  defp past_deadline?(_), do: false
 
   defp remove(reason, worker_server_state, state) do
     state = maybe_terminate_worker(reason, worker_server_state, state)
@@ -671,7 +666,7 @@ defmodule NimblePool do
     if function_exported?(worker, :handle_enqueue, 2) do
       apply_worker_callback(worker, :handle_enqueue, [command, pool_state])
     else
-      {command, pool_state}
+      {:ok, command, pool_state}
     end
   end
 
@@ -679,7 +674,7 @@ defmodule NimblePool do
     if function_exported?(worker, :handle_dequeue, 2) do
       apply_worker_callback(worker, :handle_dequeue, [command, pool_state])
     else
-      pool_state
+      {:ok, pool_state}
     end
   end
 end

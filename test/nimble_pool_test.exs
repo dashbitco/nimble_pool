@@ -262,7 +262,7 @@ defmodule NimblePoolTest do
       assert_receive {:terminate, :shutdown}
     end
 
-    test "does not restart worker on client timeout during checkout" do
+    test "restarts worker on client timeout during checkout" do
       parent = self()
 
       pool =
@@ -290,15 +290,19 @@ defmodule NimblePoolTest do
 
       :sys.resume(pool)
 
+      # Terminated and restarted
+      assert_receive {:terminate, :timeout}
+      assert_receive :started
+      refute_received :started
+
       # Do a proper checkout now
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
                {:result, :client_state_in}
              end) == :result
 
-      # Did not have to start a new worker after the previous timeout
-      refute_received :started
-
+      # Assert down from failed checkout! did not leak
       NimblePool.stop(pool, :shutdown)
+      refute_received {:DOWN, _, _, _, _}
       assert_receive {:terminate, :shutdown}
     end
 
@@ -957,7 +961,7 @@ defmodule NimblePoolTest do
   end
 
   describe "handle_enqueue & handle_dequeue" do
-    defmodule PoolWithHandleEnqueueAndDequeue do
+    defmodule StatelessPoolWithHandleEnqueueAndDequeue do
       @behaviour NimblePool
 
       def init_worker(from), do: {:ok, from, from}
@@ -968,19 +972,19 @@ defmodule NimblePoolTest do
 
       def handle_enqueue(command, %{state: {pid, ref}} = state) do
         send(pid, {ref, :enqueued})
-        {{:wrapped, command}, state}
+        {:ok, {:wrapped, command}, state}
       end
 
       def handle_dequeue({:wrapped, _command}, %{state: {pid, ref}} = state) do
         send(pid, {ref, :dequeued})
-        state
+        {:ok, state}
       end
     end
 
     test "executes handle_enqueue and handle_dequeue callbacks when defined" do
       parent = self()
       ref = make_ref()
-      pool = start_pool!(PoolWithHandleEnqueueAndDequeue, {parent, ref}, [])
+      pool = start_pool!(StatelessPoolWithHandleEnqueueAndDequeue, {parent, ref}, [])
 
       NimblePool.checkout!(pool, :checkout, fn _, _ -> {:ok, :ok} end)
 
