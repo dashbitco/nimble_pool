@@ -50,16 +50,24 @@ defmodule NimblePool do
   Checks a worker out.
 
   It receives the `command`, given to on `checkout!/4` and it must
-  return either `{:ok, client_state, worker_state}` or `{:remove, reason}`.
+  return either `{:ok, client_state, worker_state}`, `{:remove, reason}`, or
+  `{:skip, Exception.t(), pool_state}`.
+
   If `:remove` is returned, `NimblePool` will attempt to checkout another
   worker.
+
+  If `:skip` is returned, `NimblePool` will skip the checkout, the client will
+  raise the returned exception, and the worker will be left ready for the next
+  checkout attempt.
 
   Note this callback is synchronous and therefore will block the pool.
   Avoid performing long work in here, instead do as much work as
   possible on the client.
   """
-  @callback handle_checkout(command :: term, from, worker_state) ::
-              {:ok, client_state, worker_state} | {:remove, user_reason}
+  @callback handle_checkout(command :: term, from, worker_state, pool_state) ::
+              {:ok, client_state, worker_state, pool_state}
+              | {:remove, user_reason}
+              | {:skip, Exception.t(), pool_state}
 
   @doc """
   Checks a worker in.
@@ -73,8 +81,8 @@ defmodule NimblePool do
 
   This callback is optional.
   """
-  @callback handle_checkin(client_state, from, worker_state) ::
-              {:ok, worker_state} | {:remove, user_reason}
+  @callback handle_checkin(client_state, from, worker_state, pool_state) ::
+              {:ok, worker_state, pool_state} | {:remove, user_reason}
 
   @doc """
   Receives a message in the worker.
@@ -92,7 +100,7 @@ defmodule NimblePool do
 
   @doc """
   Executed by the pool, whenever a request to checkout a worker is enqueued,
-  before `handle_checkout/3` is called.
+  before `handle_checkout/4` is called.
 
   The `command` argument should be treated as an opaque value, but it can be
   wrapped with some data to be used in `handle_dequeue/2`.
@@ -108,26 +116,6 @@ defmodule NimblePool do
   @callback handle_enqueue(command :: term, pool_state) ::
               {:ok, maybe_wrapped_command :: term, pool_state}
               | {:skip, Exception.t(), pool_state}
-
-  @doc """
-  Executed by the pool, whenever a request to checkout a worker is dequeued,
-  after `handle_checkout/3` is called, but before the worker state is sent
-  to the client.
-
-  It will receive the possibly wrapped command returned from `handle_enqueue/2`.
-  If you choose to wrap the command in `handle_enquue/2`, you should unwrap it
-  here before returning it.
-
-  It must return either `{:ok, command, pool_state}` or
-  `{:skip, Exception.t(), pool_state}` if checkout is to be skipped.
-
-  Note this callback is synchronous and therefore will block the pool.
-  Avoid performing long work in here.
-
-  This callback is optional.
-  """
-  @callback handle_dequeue(maybe_wrapped_command :: term, pool_state) ::
-              {:ok, command :: term, pool_state} | {:skip, Exception.t(), pool_state}
 
   @doc """
   Terminates a worker.
@@ -157,10 +145,9 @@ defmodule NimblePool do
               {:ok, pool_state}
 
   @optional_callbacks init_pool: 1,
-                      handle_checkin: 3,
+                      handle_checkin: 4,
                       handle_info: 2,
                       handle_enqueue: 2,
-                      handle_dequeue: 2,
                       terminate_worker: 3
 
   @doc """
@@ -222,14 +209,14 @@ defmodule NimblePool do
   @doc """
   Checks out from the pool.
 
-  It expects a command, which will be passed to the `c:handle_checkout/3`
-  callback. The `c:handle_checkout/3` callback will return a client state,
+  It expects a command, which will be passed to the `c:handle_checkout/4`
+  callback. The `c:handle_checkout/4` callback will return a client state,
   which is given to the `function`.
 
   The `function` receives two arguments, the pool reference and must return
   a two-element tuple, where the first element is the function return value,
   and the second element is the updated `client_state`, which will be given
-  as the first argument to `c:handle_checkin/3`.
+  as the first argument to `c:handle_checkin/4`.
 
   `checkout!` also has an optional `timeout` value, this value will be applied
   to checkout operation itself. `checkin` happens asynchronously.
@@ -276,12 +263,6 @@ defmodule NimblePool do
     end
   end
 
-  defp deadline(timeout) when is_integer(timeout) do
-    System.monotonic_time() + System.convert_time_unit(timeout, :millisecond, :native)
-  end
-
-  defp deadline(:infinity), do: :infinity
-
   @doc """
   Pre-checks the given `worker_state` in.
 
@@ -294,6 +275,12 @@ defmodule NimblePool do
   def precheckin({pid, ref}, worker_state) do
     send(pid, {__MODULE__, :precheckin, ref, worker_state})
   end
+
+  defp deadline(timeout) when is_integer(timeout) do
+    System.monotonic_time() + System.convert_time_unit(timeout, :millisecond, :native)
+  end
+
+  defp deadline(:infinity), do: :infinity
 
   defp get_node({_, node}), do: node
   defp get_node(pid) when is_pid(pid), do: node(pid)
@@ -344,16 +331,13 @@ defmodule NimblePool do
     monitors = Map.put(monitors, mon_ref, ref)
     state = %{state | requests: requests, monitors: monitors}
 
-    case handle_enqueue(command, deadline, ref, mon_ref, state) do
+    case handle_enqueue(command, state) do
       {:ok, command, state} ->
-        {:noreply, maybe_checkout(command, deadline, mon_ref, from, state)}
+        {:noreply, maybe_checkout(command, mon_ref, deadline, from, state)}
 
       {:skip, exception, state} ->
         state = remove_request(state, ref, mon_ref)
         {:reply, {:skipped, exception}, state}
-
-      {:error, :deadline, state} ->
-        {:noreply, state}
     end
   end
 
@@ -378,16 +362,16 @@ defmodule NimblePool do
     case requests do
       %{^ref => {pid, mon_ref, :state, worker_server_state}} ->
         checkin =
-          if function_exported?(worker, :handle_checkin, 3) do
-            args = [worker_client_state, {pid, ref}, worker_server_state]
+          if function_exported?(worker, :handle_checkin, 4) do
+            args = [worker_client_state, {pid, ref}, worker_server_state, state]
             apply_worker_callback(worker, :handle_checkin, args)
           else
-            {:ok, worker_server_state}
+            {:ok, worker_server_state, state}
           end
 
         {resources, state} =
           case checkin do
-            {:ok, worker_server_state} ->
+            {:ok, worker_server_state, state} ->
               {:queue.in(worker_server_state, resources), state}
 
             {:remove, reason} ->
@@ -395,8 +379,7 @@ defmodule NimblePool do
           end
 
         state = remove_request(state, ref, mon_ref)
-        state = %{state | resources: resources}
-        {:noreply, maybe_checkout(state)}
+        {:noreply, maybe_checkout(%{state | resources: resources})}
 
       %{} ->
         exit(:unexpected_checkin)
@@ -533,7 +516,7 @@ defmodule NimblePool do
         case requests do
           # The request still exists, so we are good to go
           %{^ref => {^pid, mon_ref, :command, command, deadline}} ->
-            maybe_checkout(command, deadline, mon_ref, {pid, ref}, %{state | queue: queue})
+            maybe_checkout(command, mon_ref, deadline, {pid, ref}, %{state | queue: queue})
 
           # It should never happen
           %{^ref => _} ->
@@ -549,48 +532,52 @@ defmodule NimblePool do
     end
   end
 
-  defp maybe_checkout(command, deadline, mon_ref, {pid, ref} = from, state) do
+  defp maybe_checkout(command, mon_ref, deadline, {pid, ref} = from, state) do
     %{resources: resources, requests: requests, worker: worker, queue: queue} = state
 
-    case :queue.out(resources) do
-      {{:value, worker_server_state}, resources} ->
-        args = [command, from, worker_server_state]
+    if past_deadline?(deadline) do
+      state = remove_request(state, ref, mon_ref)
+      maybe_checkout(state)
+    else
+      case :queue.out(resources) do
+        {{:value, worker_server_state}, resources} ->
+          args = [command, from, worker_server_state, state]
 
-        case apply_worker_callback(worker, :handle_checkout, args) do
-          {:ok, worker_client_state, worker_server_state} ->
-            case handle_dequeue(command, deadline, ref, mon_ref, state) do
-              {:ok, _command, state} ->
-                GenServer.reply({pid, ref}, worker_client_state)
-                requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
-                %{state | resources: resources, requests: requests}
+          case apply_worker_callback(worker, :handle_checkout, args) do
+            {:ok, worker_client_state, worker_server_state, state} ->
+              GenServer.reply({pid, ref}, worker_client_state)
 
-              {:skip, exception, state} ->
-                GenServer.reply({pid, ref}, {:skipped, exception})
-                # do we have to terminate the worker here, because the state may have been changed
-                # during handle_checkout?
-                remove_request(state, ref, mon_ref)
+              requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
+              %{state | resources: resources, requests: requests}
 
-              {:error, :deadline, state} ->
-                state
-            end
+            {:remove, reason} ->
+              state = remove_worker(reason, worker_server_state, state)
+              maybe_checkout(command, mon_ref, deadline, from, %{state | resources: resources})
 
-          {:remove, reason} ->
-            state = remove_worker(reason, worker_server_state, state)
-            maybe_checkout(command, deadline, mon_ref, from, %{state | resources: resources})
+            {:skip, exception, state} ->
+              GenServer.reply({pid, ref}, {:skipped, exception})
+              remove_request(state, ref, mon_ref)
 
-          other ->
-            raise """
-            unexpected return from #{inspect(worker)}.handle_checkout/3.
+            other ->
+              raise """
+              unexpected return from #{inspect(worker)}.handle_checkout/4.
 
-            Expected: {:ok, client_state, server_state} | {:remove, reason}
-            Got: #{inspect(other)}
-            """
-        end
+              Expected: {:ok, client_state, server_state, pool_state} | {:remove, reason} | {:skip, Exception.t(), pool_state}
+              Got: #{inspect(other)}
+              """
+          end
 
-      {:empty, _} ->
-        %{state | queue: :queue.in(from, queue)}
+        {:empty, _} ->
+          %{state | queue: :queue.in(from, queue)}
+      end
     end
   end
+
+  defp past_deadline?(deadline) when is_integer(deadline) do
+    System.monotonic_time() >= deadline
+  end
+
+  defp past_deadline?(:infinity), do: false
 
   defp remove_worker(reason, worker_server_state, state) do
     state = maybe_terminate_worker(reason, worker_server_state, state)
@@ -680,18 +667,6 @@ defmodule NimblePool do
   defp crash_reason(:throw, value), do: {:nocatch, value}
   defp crash_reason(_, value), do: value
 
-  defp past_deadline?(deadline) when is_integer(deadline) do
-    System.monotonic_time() >= deadline
-  end
-
-  defp past_deadline?(:infinity), do: false
-
-  defp deadline_exceeded(pool_state, ref, mon_ref) do
-    pool_state
-    |> remove_request(ref, mon_ref)
-    |> maybe_checkout()
-  end
-
   defp remove_request(pool_state, ref, mon_ref) do
     requests = Map.delete(pool_state.requests, ref)
     monitors = Map.delete(pool_state.monitors, mon_ref)
@@ -699,29 +674,11 @@ defmodule NimblePool do
     %{pool_state | requests: requests, monitors: monitors}
   end
 
-  defp handle_enqueue(command, deadline, ref, mon_ref, %{worker: worker} = pool_state) do
-    cond do
-      past_deadline?(deadline) ->
-        {:error, :deadline, deadline_exceeded(pool_state, ref, mon_ref)}
-
-      function_exported?(worker, :handle_enqueue, 2) ->
-        apply_worker_callback(worker, :handle_enqueue, [command, pool_state])
-
-      true ->
-        {:ok, command, pool_state}
-    end
-  end
-
-  defp handle_dequeue(command, deadline, ref, mon_ref, %{worker: worker} = pool_state) do
-    cond do
-      past_deadline?(deadline) ->
-        {:error, :deadline, deadline_exceeded(pool_state, ref, mon_ref)}
-
-      function_exported?(worker, :handle_dequeue, 2) ->
-        apply_worker_callback(worker, :handle_dequeue, [command, pool_state])
-
-      true ->
-        {:ok, command, pool_state}
+  defp handle_enqueue(command, %{worker: worker} = pool_state) do
+    if function_exported?(worker, :handle_enqueue, 2) do
+      apply_worker_callback(worker, :handle_enqueue, [command, pool_state])
+    else
+      {:ok, command, pool_state}
     end
   end
 end

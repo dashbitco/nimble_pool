@@ -11,12 +11,12 @@ defmodule NimblePoolTest do
       Tuple.append(fun.(rest), pool_state)
     end
 
-    def handle_checkout(command, from, instructions) do
-      next(instructions, :handle_checkout, &[command, from, &1])
+    def handle_checkout(command, from, instructions, pool_state) do
+      next(instructions, :handle_checkout, &[command, from, &1, pool_state])
     end
 
-    def handle_checkin(client_state, from, instructions) do
-      next(instructions, :handle_checkin, &[client_state, from, &1])
+    def handle_checkin(client_state, from, instructions, pool_state) do
+      next(instructions, :handle_checkin, &[client_state, from, &1, pool_state])
     end
 
     def handle_info(message, instructions) do
@@ -70,20 +70,30 @@ defmodule NimblePoolTest do
       TestAgent.next(pid, :init_worker, [pid])
     end
 
-    def handle_checkout(command, from, state) do
-      TestAgent.next(get_pid(state), :handle_checkout, [command, from, state])
+    def handle_checkout(command, from, worker_state, pool_state) do
+      TestAgent.next(get_pid(worker_state), :handle_checkout, [
+        command,
+        from,
+        worker_state,
+        pool_state
+      ])
     end
 
-    def handle_checkin(client_state, from, state) do
-      TestAgent.next(get_pid(state), :handle_checkin, [client_state, from, state])
+    def handle_checkin(client_state, from, worker_state, pool_state) do
+      TestAgent.next(get_pid(worker_state), :handle_checkin, [
+        client_state,
+        from,
+        worker_state,
+        pool_state
+      ])
     end
 
-    def handle_info(message, state) do
-      TestAgent.next(get_pid(state), :handle_info, [message, state])
+    def handle_info(message, worker_state) do
+      TestAgent.next(get_pid(worker_state), :handle_info, [message, worker_state])
     end
 
-    def terminate_worker(reason, state, pid) do
-      TestAgent.next(pid, :terminate_worker, [reason, state, pid])
+    def terminate_worker(reason, worker_state, pid) do
+      TestAgent.next(pid, :terminate_worker, [reason, worker_state, pid])
     end
 
     defp get_pid(pid) when is_pid(pid), do: pid
@@ -125,8 +135,12 @@ defmodule NimblePoolTest do
           {:ok, next}
         end,
         init_worker: fn next -> {:ok, next} end,
-        handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-        handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+        handle_checkout: fn :checkout, _from, next, pool_state ->
+          {:ok, :client_state_out, next, pool_state}
+        end,
+        handle_checkin: fn :client_state_in, _from, next, pool_state ->
+          {:ok, next, pool_state}
+        end,
         terminate_worker: fn reason, [], state ->
           send(parent, {:terminate, reason})
           {:ok, state}
@@ -169,7 +183,9 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: fn next -> {:ok, next} end,
-          handle_checkout: fn :checkout, _from, _next -> Process.exit(self(), :kill) end
+          handle_checkout: fn :checkout, _from, _next, _pool_state ->
+            Process.exit(self(), :kill)
+          end
         )
 
       assert catch_exit(
@@ -184,8 +200,12 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, [], state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -222,8 +242,12 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, [], state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -268,8 +292,12 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, [], state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -308,10 +336,18 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
-          handle_checkout: fn :checkout2, _from, next -> {:ok, :client_state_out2, next} end,
-          handle_checkin: fn :client_state_in2, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
+          handle_checkout: fn :checkout2, _from, next, pool_state ->
+            {:ok, :client_state_out2, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in2, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, [], state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -360,10 +396,18 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: fn next -> {:ok, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
-          handle_checkout: fn :checkout2, _from, next -> {:ok, :client_state_out2, next} end,
-          handle_checkin: fn :client_state_in2, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
+          handle_checkout: fn :checkout2, _from, next, pool_state ->
+            {:ok, :client_state_out2, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in2, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn _reason, [], state -> {:ok, state} end
         )
 
@@ -400,8 +444,12 @@ defmodule NimblePoolTest do
         stateless_pool!(
           [
             init_worker: fn next -> {:ok, next} end,
-            handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-            handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+            handle_checkout: fn :checkout, _from, next, pool_state ->
+              {:ok, :client_state_out, next, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, next, pool_state ->
+              {:ok, next, pool_state}
+            end,
             terminate_worker: fn _reason, [], state -> {:ok, state} end
           ],
           pool_size: 2
@@ -539,8 +587,12 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: async_init,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, [], state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -576,8 +628,12 @@ defmodule NimblePoolTest do
       pool =
         stateless_pool!(
           init_worker: async_init,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, [], state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -604,14 +660,18 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, _next -> {:remove, :restarting} end,
+          handle_checkout: fn :checkout, _from, _next, _pool_state -> {:remove, :restarting} end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
           end,
           init_worker: fn next -> send(parent, :restarted) && {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -638,15 +698,23 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, _next -> {:remove, :restarting} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, _next, _pool_state ->
+            {:remove, :restarting}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
           end,
           init_worker: fn next -> send(parent, :restarted) && {:ok, next, next} end,
-          handle_checkout: fn :checkout2, _from, next -> {:ok, :client_state_out2, next} end,
-          handle_checkin: fn :client_state_in2, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout2, _from, next, pool_state ->
+            {:ok, :client_state_out2, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in2, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -684,8 +752,12 @@ defmodule NimblePoolTest do
             {:ok, state}
           end,
           init_worker: fn next -> send(parent, :restarted) && {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -716,8 +788,8 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next ->
-            {:ok, :client_state_out, {:server_state_out, next}}
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, {:server_state_out, next}, pool_state}
           end,
           terminate_worker: fn reason, {:server_state_out, _}, state ->
             send(parent, {:terminate, reason})
@@ -748,8 +820,8 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next ->
-            {:ok, :client_state_out, {:server_state_out, next}}
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, {:server_state_out, next}, pool_state}
           end,
           terminate_worker: fn reason, :client_state_in, state ->
             send(parent, {:terminate, reason})
@@ -783,8 +855,12 @@ defmodule NimblePoolTest do
           [
             init_worker: fn next -> {:ok, next, next} end,
             init_worker: fn next -> {:ok, next, next} end,
-            handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-            handle_checkin: fn :client_state_in, _from, _next -> {:remove, :checkin} end,
+            handle_checkout: fn :checkout, _from, next, pool_state ->
+              {:ok, :client_state_out, next, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, _next, _pool_state ->
+              {:remove, :checkin}
+            end,
             terminate_worker: fn reason, _, state ->
               send(parent, {:terminate, reason})
               {:ok, state}
@@ -829,14 +905,18 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, _next -> raise "oops" end,
+          handle_checkout: fn :checkout, _from, _next, _pool_state -> raise "oops" end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
           end,
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -860,15 +940,21 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, _next -> raise "oops" end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, _next, _pool_state -> raise "oops" end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
           end,
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout2, _from, next -> {:ok, :client_state_out2, next} end,
-          handle_checkin: fn :client_state_in2, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout2, _from, next, pool_state ->
+            {:ok, :client_state_out2, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in2, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -904,8 +990,12 @@ defmodule NimblePoolTest do
             {:ok, state}
           end,
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -934,8 +1024,12 @@ defmodule NimblePoolTest do
           handle_info: fn _msg, _next -> {:remove, :unused} end,
           terminate_worker: fn :unused, _, _ -> raise "oops" end,
           init_worker: fn next -> send(parent, :init) && {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next -> {:ok, :client_state_out, next} end,
-          handle_checkin: fn :client_state_in, _from, next -> {:ok, next} end,
+          handle_checkout: fn :checkout, _from, next, pool_state ->
+            {:ok, :client_state_out, next, pool_state}
+          end,
+          handle_checkin: fn :client_state_in, _from, next, pool_state ->
+            {:ok, next, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -956,44 +1050,77 @@ defmodule NimblePoolTest do
     end
   end
 
-  describe "handle_enqueue & handle_dequeue" do
-    test "executes handle_enqueue and handle_dequeue callbacks when defined" do
-      defmodule PoolWithHandleEnqueueAndDequeue do
+  describe "handle_enqueue" do
+    test "executes handle_enqueue/2 when defined" do
+      defmodule PoolWithHandleEnqueue do
         @behaviour NimblePool
 
         def init_worker(parent) do
           {:ok, parent, parent}
         end
 
-        def handle_checkout(_command, _from, parent) do
-          {:ok, parent, parent}
+        def handle_checkout(_command, _from, parent, pool_state) do
+          {:ok, parent, parent, pool_state}
         end
 
         def handle_enqueue(command, pool_state) do
           send(pool_state.state, :enqueued)
           {:ok, command, pool_state}
         end
-
-        def handle_dequeue(command, pool_state) do
-          send(pool_state.state, :dequeued)
-          {:ok, command, pool_state}
-        end
       end
 
       parent = self()
-      pool = start_pool!(PoolWithHandleEnqueueAndDequeue, parent, [])
+      pool = start_pool!(PoolWithHandleEnqueue, parent, [])
 
       NimblePool.checkout!(pool, :checkout, fn _, _ -> {:ok, :ok} end)
 
       assert_receive :enqueued
-      assert_receive :dequeued
+    end
+  end
+
+  describe "skip" do
+    defmodule SkippedCheckoutException do
+      defexception message: "skipped checkout!"
+    end
+
+    test "skips checkout and does not restart worker when handle_checkout returns :skip tuple" do
+      defmodule PoolThatSkipsOnHandleCheckout do
+        @behaviour NimblePool
+
+        def init_worker(parent) do
+          send(parent, :init_worker)
+          {:ok, parent, parent}
+        end
+
+        def handle_checkout(:skip, _from, _parent, pool_state) do
+          {:skip, SkippedCheckoutException, pool_state}
+        end
+
+        def handle_checkout(_command, _from, parent, pool_state) do
+          {:ok, parent, parent, pool_state}
+        end
+      end
+
+      parent = self()
+      pool = start_pool!(PoolThatSkipsOnHandleCheckout, parent, [])
+
+      assert_receive :init_worker
+
+      assert_raise(
+        SkippedCheckoutException,
+        ~r/skipped checkout!/,
+        fn ->
+          NimblePool.checkout!(pool, :skip, fn _ref, state -> {state, state} end)
+        end
+      )
+
+      refute_receive :init_worker
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, state -> {:result, state} end) ==
+               :result
     end
 
     test "handle_checkout will not be called and worker will not restart if handle_enqueue returns :skip tuple" do
-      defmodule HandleEnqueueException do
-        defexception message: "error during handle_enqueue"
-      end
-
       defmodule PoolThatSkipsOnEnqueue do
         @behaviour NimblePool
 
@@ -1002,13 +1129,13 @@ defmodule NimblePoolTest do
           {:ok, parent, parent}
         end
 
-        def handle_checkout(_command, _from, parent) do
+        def handle_checkout(_command, _from, parent, pool_state) do
           send(parent, :handle_checkout)
-          {:ok, parent, parent}
+          {:ok, parent, parent, pool_state}
         end
 
-        def handle_enqueue(:fail, parent) do
-          {:skip, HandleEnqueueException, parent}
+        def handle_enqueue(:skip, parent) do
+          {:skip, SkippedCheckoutException, parent}
         end
 
         def handle_enqueue(:checkout, parent) do
@@ -1021,8 +1148,8 @@ defmodule NimblePoolTest do
 
       assert_receive :init_worker
 
-      assert_raise(HandleEnqueueException, ~r/error during handle_enqueue/, fn ->
-        NimblePool.checkout!(pool, :fail, fn _ref, state -> {state, state} end)
+      assert_raise(SkippedCheckoutException, ~r/skipped checkout/, fn ->
+        NimblePool.checkout!(pool, :skip, fn _ref, state -> {state, state} end)
       end)
 
       refute_receive :init_worker
@@ -1030,55 +1157,6 @@ defmodule NimblePoolTest do
 
       NimblePool.checkout!(pool, :checkout, fn _ref, state -> {state, state} end)
       assert_receive :handle_checkout
-    end
-
-    test "handle_checkin will not be called and worker will not restart if handle_dequeue returns :skip tuple" do
-      defmodule HandleDequeueException do
-        defexception message: "error during handle_dequeue"
-      end
-
-      defmodule PoolThatSkipsOnDequeue do
-        @behaviour NimblePool
-        def init_worker(parent) do
-          send(parent, :init_worker)
-          {:ok, parent, parent}
-        end
-
-        def handle_checkout(_command, _from, parent) do
-          {:ok, parent, parent}
-        end
-
-        def handle_checkin(_command, _from, parent) do
-          send(parent, :handle_checkin)
-          {:ok, parent}
-        end
-
-        def handle_enqueue(command, parent) do
-          {:ok, {:wrapped, command}, parent}
-        end
-
-        def handle_dequeue({:wrapped, :checkout}, parent) do
-          {:ok, :successful, parent}
-        end
-
-        def handle_dequeue({:wrapped, :fail}, parent) do
-          {:skip, HandleDequeueException, parent}
-        end
-      end
-
-      parent = self()
-      pool = start_pool!(PoolThatSkipsOnDequeue, parent, [])
-      assert_receive :init_worker
-
-      assert_raise(HandleDequeueException, ~r/error during handle_dequeue/, fn ->
-        NimblePool.checkout!(pool, :fail, fn _ref, state -> {state, state} end)
-      end)
-
-      refute_receive :init_worker
-      refute_receive :handle_checkin
-
-      NimblePool.checkout!(pool, :checkout, fn _ref, state -> {state, state} end)
-      assert_receive :handle_checkin
     end
   end
 end
