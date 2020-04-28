@@ -51,7 +51,7 @@ defmodule NimblePool do
 
   It receives `maybe_wrapped_command`. The `command` is given to the `checkout!/4`
   call and may optionally be wrapped by `c:handle_enqueue/2`. It must return either
-  `{:ok, client_state, worker_state}`, `{:remove, reason}`, or
+  `{:ok, client_state, worker_state}`, `{:remove, reason, pool_state}`, or
   `{:skip, Exception.t(), pool_state}`.
 
   If `:remove` is returned, `NimblePool` will attempt to checkout another
@@ -67,14 +67,14 @@ defmodule NimblePool do
   """
   @callback handle_checkout(maybe_wrapped_command :: term, from, worker_state, pool_state) ::
               {:ok, client_state, worker_state, pool_state}
-              | {:remove, user_reason}
+              | {:remove, user_reason, pool_state}
               | {:skip, Exception.t(), pool_state}
 
   @doc """
   Checks a worker in.
 
   It receives the `client_state`, returned by the `checkout!/4` anonymous
-  function and it must return either `{:ok, worker_state}` or `{:remove, reason}`.
+  function and it must return either `{:ok, worker_state}` or `{:remove, reason, pool_state}`.
 
   Note this callback is synchronous and therefore will block the pool.
   Avoid performing long work in here, instead do as much work as
@@ -83,7 +83,7 @@ defmodule NimblePool do
   This callback is optional.
   """
   @callback handle_checkin(client_state, from, worker_state, pool_state) ::
-              {:ok, worker_state, pool_state} | {:remove, user_reason}
+              {:ok, worker_state, pool_state} | {:remove, user_reason, pool_state}
 
   @doc """
   Receives a message in the worker.
@@ -364,7 +364,7 @@ defmodule NimblePool do
         checkin =
           if function_exported?(worker, :handle_checkin, 4) do
             args = [worker_client_state, {pid, ref}, worker_server_state, state]
-            apply_worker_callback(worker, :handle_checkin, args)
+            apply_worker_callback_with_state(state, :handle_checkin, args)
           else
             {:ok, worker_server_state, state}
           end
@@ -374,7 +374,7 @@ defmodule NimblePool do
             {:ok, worker_server_state, state} ->
               {:queue.in(worker_server_state, resources), state}
 
-            {:remove, reason} ->
+            {:remove, reason, state} ->
               {resources, remove_worker(reason, worker_server_state, state)}
           end
 
@@ -543,14 +543,14 @@ defmodule NimblePool do
         {{:value, worker_server_state}, resources} ->
           args = [command, from, worker_server_state, state]
 
-          case apply_worker_callback(worker, :handle_checkout, args) do
+          case apply_worker_callback_with_state(state, :handle_checkout, args) do
             {:ok, worker_client_state, worker_server_state, state} ->
               GenServer.reply({pid, ref}, worker_client_state)
 
               requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
               %{state | resources: resources, requests: requests}
 
-            {:remove, reason} ->
+            {:remove, reason, state} ->
               state = remove_worker(reason, worker_server_state, state)
               maybe_checkout(command, mon_ref, deadline, from, %{state | resources: resources})
 
@@ -562,7 +562,7 @@ defmodule NimblePool do
               raise """
               unexpected return from #{inspect(worker)}.handle_checkout/4.
 
-              Expected: {:ok, client_state, server_state, pool_state} | {:remove, reason} | {:skip, Exception.t(), pool_state}
+              Expected: {:ok, client_state, server_state, pool_state} | {:remove, reason, pool_state} | {:skip, Exception.t(), pool_state}
               Got: #{inspect(other)}
               """
           end
@@ -646,6 +646,17 @@ defmodule NimblePool do
   end
 
   defp apply_worker_callback(worker, fun, args) do
+    do_apply_worker_callback(worker, fun, args)
+  end
+
+  defp apply_worker_callback_with_state(%{worker: worker} = pool_state, fun, args) do
+    case do_apply_worker_callback(worker, fun, args) do
+      {:remove, reason} -> {:remove, reason, pool_state}
+      result -> result
+    end
+  end
+
+  defp do_apply_worker_callback(worker, fun, args) do
     try do
       apply(worker, fun, args)
     catch

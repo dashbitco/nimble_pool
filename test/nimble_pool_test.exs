@@ -660,7 +660,7 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, _next, _pool_state -> {:remove, :restarting} end,
+          handle_checkout: fn :checkout, _from, _next, pool_state -> {:remove, :restarting, pool_state} end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -701,8 +701,8 @@ defmodule NimblePoolTest do
           handle_checkout: fn :checkout, _from, next, pool_state ->
             {:ok, :client_state_out, next, pool_state}
           end,
-          handle_checkin: fn :client_state_in, _from, _next, _pool_state ->
-            {:remove, :restarting}
+          handle_checkin: fn :client_state_in, _from, _next, pool_state ->
+            {:remove, :restarting, pool_state}
           end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
@@ -858,8 +858,8 @@ defmodule NimblePoolTest do
             handle_checkout: fn :checkout, _from, next, pool_state ->
               {:ok, :client_state_out, next, pool_state}
             end,
-            handle_checkin: fn :client_state_in, _from, _next, _pool_state ->
-              {:remove, :checkin}
+            handle_checkin: fn :client_state_in, _from, _next, pool_state ->
+              {:remove, :checkin, pool_state}
             end,
             terminate_worker: fn reason, _, state ->
               send(parent, {:terminate, reason})
