@@ -91,13 +91,14 @@ defmodule NimblePool do
               {:ok, worker_state} | {:remove, user_reason}
 
   @doc """
-  Executed by the pool, whenever a request to checkout a worker is enqueued.
+  Executed by the pool, whenever a request to checkout a worker is enqueued,
+  before `handle_checkout/3` is called.
 
   The `command` argument should be treated as an opaque value, but it can be
   wrapped with some data to be used in `handle_dequeue/2`.
 
   It must return either `{:ok, maybe_wrapped_command, pool_state}` or
-  `{:skip, pool_state}` if checkout is to be skipped.
+  `{:skip, Exception.t(), pool_state}` if checkout is to be skipped.
 
   Note this callback is synchronous and therefore will block the pool.
   Avoid performing long work in here.
@@ -109,9 +110,11 @@ defmodule NimblePool do
               | {:skip, Exception.t(), pool_state}
 
   @doc """
-  Executed by the pool, whenever a request to checkout a worker is dequeued.
+  Executed by the pool, whenever a request to checkout a worker is dequeued,
+  after `handle_checkout/3` is called, but before the worker state is sent
+  to the client.
 
-  It will receive the possibly wrapped command returned from `handle_enquue/2`.
+  It will receive the possibly wrapped command returned from `handle_enqueue/2`.
   If you choose to wrap the command in `handle_enquue/2`, you should unwrap it
   here before returning it.
 
