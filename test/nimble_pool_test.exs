@@ -71,33 +71,20 @@ defmodule NimblePoolTest do
     end
 
     def handle_checkout(command, from, worker_state, pool_state) do
-      TestAgent.next(get_pid(worker_state), :handle_checkout, [
-        command,
-        from,
-        worker_state,
-        pool_state
-      ])
+      TestAgent.next(pool_state, :handle_checkout, [command, from, worker_state, pool_state])
     end
 
     def handle_checkin(client_state, from, worker_state, pool_state) do
-      TestAgent.next(get_pid(worker_state), :handle_checkin, [
-        client_state,
-        from,
-        worker_state,
-        pool_state
-      ])
+      TestAgent.next(pool_state, :handle_checkin, [client_state, from, worker_state, pool_state])
     end
 
     def handle_info(message, worker_state) do
-      TestAgent.next(get_pid(worker_state), :handle_info, [message, worker_state])
+      TestAgent.next(worker_state, :handle_info, [message, worker_state])
     end
 
     def terminate_worker(reason, worker_state, pid) do
       TestAgent.next(pid, :terminate_worker, [reason, worker_state, pid])
     end
-
-    defp get_pid(pid) when is_pid(pid), do: pid
-    defp get_pid({_, pid}) when is_pid(pid), do: pid
   end
 
   defp stateless_pool!(instructions, opts \\ []) do
@@ -660,7 +647,9 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> send(parent, :started) && {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, _next, pool_state -> {:remove, :restarting, pool_state} end,
+          handle_checkout: fn :checkout, _from, _next, pool_state ->
+            {:remove, :restarting, pool_state}
+          end,
           terminate_worker: fn reason, _, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -788,10 +777,10 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next, pool_state ->
-            {:ok, :client_state_out, {:server_state_out, next}, pool_state}
+          handle_checkout: fn :checkout, _from, _next, pool_state ->
+            {:ok, :client_state_out, :server_state_out, pool_state}
           end,
-          terminate_worker: fn reason, {:server_state_out, _}, state ->
+          terminate_worker: fn reason, :server_state_out, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
           end,
@@ -820,8 +809,8 @@ defmodule NimblePoolTest do
       {agent, pool} =
         stateful_pool!(
           init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, next, pool_state ->
-            {:ok, :client_state_out, {:server_state_out, next}, pool_state}
+          handle_checkout: fn :checkout, _from, _next, pool_state ->
+            {:ok, :client_state_out, :server_state_out, pool_state}
           end,
           terminate_worker: fn reason, :client_state_in, state ->
             send(parent, {:terminate, reason})
@@ -1055,26 +1044,30 @@ defmodule NimblePoolTest do
       defmodule PoolWithHandleEnqueue do
         @behaviour NimblePool
 
-        def init_worker(parent) do
-          {:ok, parent, parent}
+        def init_worker(:parent) do
+          {:ok, :child1, :parent1}
         end
 
-        def handle_checkout(_command, _from, parent, pool_state) do
-          {:ok, parent, parent, pool_state}
+        def handle_enqueue(:command, :parent1) do
+          {:ok, :wrapped_command, :parent2}
         end
 
-        def handle_enqueue(command, pool_state) do
-          send(pool_state.state, :enqueued)
-          {:ok, command, pool_state}
+        def handle_checkout(:wrapped_command, _from, :child1, :parent2) do
+          {:ok, :client_command, :child2, :parent3}
+        end
+
+        def handle_checkin(:checkin_command, _from, :child2, :parent3) do
+          {:ok, :child3, :parent4}
         end
       end
 
-      parent = self()
-      pool = start_pool!(PoolWithHandleEnqueue, parent, [])
+      pool = start_pool!(PoolWithHandleEnqueue, :parent, [])
 
-      NimblePool.checkout!(pool, :checkout, fn _, _ -> {:ok, :ok} end)
+      assert NimblePool.checkout!(pool, :command, fn _, :client_command ->
+               {:ok, :checkin_command}
+             end) == :ok
 
-      assert_receive :enqueued
+      NimblePool.stop(pool, :shutdown)
     end
   end
 
@@ -1124,39 +1117,33 @@ defmodule NimblePoolTest do
       defmodule PoolThatSkipsOnEnqueue do
         @behaviour NimblePool
 
-        def init_worker(parent) do
-          send(parent, :init_worker)
-          {:ok, parent, parent}
+        def init_worker(:init) do
+          {:ok, :client, :will_skip}
         end
 
-        def handle_checkout(_command, _from, parent, pool_state) do
-          send(parent, :handle_checkout)
-          {:ok, parent, parent, pool_state}
+        def handle_checkout(:command, _from, :client, :handle_checkout) do
+          {:ok, :client_command, :client, :checked_out}
         end
 
-        def handle_enqueue(:skip, parent) do
-          {:skip, SkippedCheckoutException, parent}
+        def handle_enqueue(:skip, :will_skip) do
+          {:skip, SkippedCheckoutException, :will_checkout}
         end
 
-        def handle_enqueue(:checkout, parent) do
-          {:ok, parent, parent}
+        def handle_enqueue(:checkout, :will_checkout) do
+          {:ok, :command, :handle_checkout}
         end
       end
 
-      parent = self()
-      pool = start_pool!(PoolThatSkipsOnEnqueue, parent, [])
-
-      assert_receive :init_worker
+      pool = start_pool!(PoolThatSkipsOnEnqueue, :init, [])
 
       assert_raise(SkippedCheckoutException, ~r/skipped checkout/, fn ->
-        NimblePool.checkout!(pool, :skip, fn _ref, state -> {state, state} end)
+        NimblePool.checkout!(pool, :skip, fn _ref, :client_command ->
+          raise "this will never be called"
+        end)
       end)
 
-      refute_receive :init_worker
-      refute_receive :handle_checkout
-
-      NimblePool.checkout!(pool, :checkout, fn _ref, state -> {state, state} end)
-      assert_receive :handle_checkout
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_command -> {:ok, :ok} end) ==
+               :ok
     end
   end
 end

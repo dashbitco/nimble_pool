@@ -325,18 +325,18 @@ defmodule NimblePool do
 
   @impl true
   def handle_call({:checkout, command, deadline}, {pid, ref} = from, state) do
-    %{requests: requests, monitors: monitors} = state
+    %{requests: requests, monitors: monitors, worker: worker, state: pool_state} = state
     mon_ref = Process.monitor(pid)
     requests = Map.put(requests, ref, {pid, mon_ref, :command, command, deadline})
     monitors = Map.put(monitors, mon_ref, ref)
     state = %{state | requests: requests, monitors: monitors}
 
-    case handle_enqueue(command, state) do
-      {:ok, command, state} ->
-        {:noreply, maybe_checkout(command, mon_ref, deadline, from, state)}
+    case handle_enqueue(worker, command, pool_state) do
+      {:ok, command, pool_state} ->
+        {:noreply, maybe_checkout(command, mon_ref, deadline, from, %{state | state: pool_state})}
 
-      {:skip, exception, state} ->
-        state = remove_request(state, ref, mon_ref)
+      {:skip, exception, pool_state} ->
+        state = remove_request(%{state | state: pool_state}, ref, mon_ref)
         {:reply, {:skipped, exception}, state}
     end
   end
@@ -357,25 +357,26 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, :checkin, ref, worker_client_state}, state) do
-    %{requests: requests, resources: resources, worker: worker} = state
+    %{requests: requests, resources: resources, worker: worker, state: pool_state} = state
 
     case requests do
       %{^ref => {pid, mon_ref, :state, worker_server_state}} ->
         checkin =
           if function_exported?(worker, :handle_checkin, 4) do
-            args = [worker_client_state, {pid, ref}, worker_server_state, state]
-            apply_worker_callback_with_state(state, :handle_checkin, args)
+            args = [worker_client_state, {pid, ref}, worker_server_state, pool_state]
+            apply_worker_callback(pool_state, worker, :handle_checkin, args)
           else
-            {:ok, worker_server_state, state}
+            {:ok, worker_server_state, pool_state}
           end
 
         {resources, state} =
           case checkin do
-            {:ok, worker_server_state, state} ->
-              {:queue.in(worker_server_state, resources), state}
+            {:ok, worker_server_state, pool_state} ->
+              {:queue.in(worker_server_state, resources), %{state | state: pool_state}}
 
-            {:remove, reason, state} ->
-              {resources, remove_worker(reason, worker_server_state, state)}
+            {:remove, reason, pool_state} ->
+              {resources,
+               remove_worker(reason, worker_server_state, %{state | state: pool_state})}
           end
 
         state = remove_request(state, ref, mon_ref)
@@ -533,7 +534,8 @@ defmodule NimblePool do
   end
 
   defp maybe_checkout(command, mon_ref, deadline, {pid, ref} = from, state) do
-    %{resources: resources, requests: requests, worker: worker, queue: queue} = state
+    %{resources: resources, requests: requests, worker: worker, queue: queue, state: pool_state} =
+      state
 
     if past_deadline?(deadline) do
       state = remove_request(state, ref, mon_ref)
@@ -541,22 +543,22 @@ defmodule NimblePool do
     else
       case :queue.out(resources) do
         {{:value, worker_server_state}, resources} ->
-          args = [command, from, worker_server_state, state]
+          args = [command, from, worker_server_state, pool_state]
 
-          case apply_worker_callback_with_state(state, :handle_checkout, args) do
-            {:ok, worker_client_state, worker_server_state, state} ->
+          case apply_worker_callback(pool_state, worker, :handle_checkout, args) do
+            {:ok, worker_client_state, worker_server_state, pool_state} ->
               GenServer.reply({pid, ref}, worker_client_state)
 
               requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
-              %{state | resources: resources, requests: requests}
+              %{state | resources: resources, requests: requests, state: pool_state}
 
-            {:remove, reason, state} ->
-              state = remove_worker(reason, worker_server_state, state)
+            {:remove, reason, pool_state} ->
+              state = remove_worker(reason, worker_server_state, %{state | state: pool_state})
               maybe_checkout(command, mon_ref, deadline, from, %{state | resources: resources})
 
-            {:skip, exception, state} ->
+            {:skip, exception, pool_state} ->
               GenServer.reply({pid, ref}, {:skipped, exception})
-              remove_request(state, ref, mon_ref)
+              remove_request(%{state | state: pool_state}, ref, mon_ref)
 
             other ->
               raise """
@@ -646,17 +648,14 @@ defmodule NimblePool do
   end
 
   defp apply_worker_callback(worker, fun, args) do
-    do_apply_worker_callback(worker, fun, args)
+    do_apply_worker_callback(worker, fun, args, &{:remove, &1})
   end
 
-  defp apply_worker_callback_with_state(%{worker: worker} = pool_state, fun, args) do
-    case do_apply_worker_callback(worker, fun, args) do
-      {:remove, reason} -> {:remove, reason, pool_state}
-      result -> result
-    end
+  defp apply_worker_callback(pool_state, worker, fun, args) do
+    do_apply_worker_callback(worker, fun, args, &{:remove, &1, pool_state})
   end
 
-  defp do_apply_worker_callback(worker, fun, args) do
+  defp do_apply_worker_callback(worker, fun, args, catch_fun) do
     try do
       apply(worker, fun, args)
     catch
@@ -671,7 +670,7 @@ defmodule NimblePool do
           crash_reason: {crash_reason(kind, reason), __STACKTRACE__}
         )
 
-        {:remove, reason}
+        catch_fun.(reason)
     end
   end
 
@@ -685,9 +684,9 @@ defmodule NimblePool do
     %{pool_state | requests: requests, monitors: monitors}
   end
 
-  defp handle_enqueue(command, %{worker: worker} = pool_state) do
+  defp handle_enqueue(worker, command, pool_state) do
     if function_exported?(worker, :handle_enqueue, 2) do
-      apply_worker_callback(worker, :handle_enqueue, [command, pool_state])
+      worker.handle_enqueue(command, pool_state)
     else
       {:ok, command, pool_state}
     end
