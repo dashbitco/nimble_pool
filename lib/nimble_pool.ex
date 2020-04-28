@@ -49,8 +49,9 @@ defmodule NimblePool do
   @doc """
   Checks a worker out.
 
-  It receives the `command`, given to on `checkout!/4` and it must
-  return either `{:ok, client_state, worker_state}`, `{:remove, reason}`, or
+  It receives `maybe_wrapped_command`. The `command` is given to the `checkout!/4`
+  call and may optionally be wrapped by `c:handle_enqueue/2`. It must return either
+  `{:ok, client_state, worker_state}`, `{:remove, reason}`, or
   `{:skip, Exception.t(), pool_state}`.
 
   If `:remove` is returned, `NimblePool` will attempt to checkout another
@@ -64,7 +65,7 @@ defmodule NimblePool do
   Avoid performing long work in here, instead do as much work as
   possible on the client.
   """
-  @callback handle_checkout(command :: term, from, worker_state, pool_state) ::
+  @callback handle_checkout(maybe_wrapped_command :: term, from, worker_state, pool_state) ::
               {:ok, client_state, worker_state, pool_state}
               | {:remove, user_reason}
               | {:skip, Exception.t(), pool_state}
@@ -99,11 +100,10 @@ defmodule NimblePool do
               {:ok, worker_state} | {:remove, user_reason}
 
   @doc """
-  Executed by the pool, whenever a request to checkout a worker is enqueued,
-  before `handle_checkout/4` is called.
+  Executed by the pool, whenever a request to checkout a worker is enqueued.
 
   The `command` argument should be treated as an opaque value, but it can be
-  wrapped with some data to be used in `handle_dequeue/2`.
+  wrapped with some data to be used in `c:handle_checkout/4`.
 
   It must return either `{:ok, maybe_wrapped_command, pool_state}` or
   `{:skip, Exception.t(), pool_state}` if checkout is to be skipped.
