@@ -112,7 +112,7 @@ end
 
 ### HTTP1-based example
 
-The pool below uses [Mint](https://hexdocs.pm/mint) for HTTP1 connections. It establishes connections eagerly. A better approach may be to establish connections lazily on checkout, as done by [Finch](github.com/keathley/finch), which is built on top of Mint+NimbleOptions.
+The pool below uses [Mint](https://hexdocs.pm/mint) for HTTP1 connections. It establishes connections eagerly. A better approach may be to establish connections lazily on checkout, as done by [Finch](https://github.com/keathley/finch), which is built on top of Mint+NimbleOptions.
 
 ```elixir
 defmodule HTTP1Pool do
