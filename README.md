@@ -56,29 +56,22 @@ defmodule PortPool do
     pool_timeout = Keyword.get(opts, :pool_timeout, 5000)
     receive_timeout = Keyword.get(opts, :receive_timeout, 15000)
 
-    NimblePool.checkout!(pool, :checkout, fn _from, port ->
+    NimblePool.checkout!(pool, :checkout, fn {pid, _}, port ->
       send(port, {self(), {:command, command}})
 
       receive do
         {^port, {:data, data}} ->
-          transfer_back(port, pool)
-          {data, :done}
+          try do
+            Port.connect(port, pid)
+            {data, :ok}
+          rescue
+            _ -> {data, :closed}
+          end
       after
         receive_timeout ->
-          transfer_back(port, pool)
           exit(:receive_timeout)
       end
     end, pool_timeout)
-  end
-
-  defp transfer_back(port, pool) do
-    send(port, {self(), {:connect, pool}})
-
-    receive do
-      {^port, :connected} -> :ok
-    after
-      timeout -> raise "did not transfer port"
-    end
   end
 
   @impl NimblePool
@@ -91,20 +84,24 @@ defmodule PortPool do
   @impl NimblePool
   # Transfer the port to the caller
   def handle_checkout(:checkout, {pid, _}, port, pool_state) do
-    send(port, {self(), {:connect, pid}})
+    Port.connect(port, pid)
     {:ok, port, port, pool_state}
   end
 
   @impl NimblePool
   # We got it back
-  def handle_checkin(:done, _from, port, pool_state) do
+  def handle_checkin(:ok, _from, port, pool_state) do
     {:ok, port, pool_state}
+  end
+
+  def handle_checkin(:close, _from, port, pool_state) do
+    {:remove, :closed}
   end
 
   @impl NimblePool
   # On terminate, effectively close it
   def terminate_worker(_reason, port, pool_state) do
-    send(port, {self(), :close})
+    Port.close(port)
     {:ok, pool_state}
   end
 end
@@ -140,19 +137,18 @@ defmodule HTTP1Pool do
       {kind, conn, result_or_error} =
         with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil),
              {:ok, conn, result} <- receive_response([], conn, ref, %{}, receive_timeout) do
-          {{:ok, result}, controlling_process(conn, pool)}
+          {{:ok, result}, transfer_if_open(conn)}
         end
 
       {{kind, result_or_error}, conn}
     end, pool_timeout)
   end
 
-  defp controlling_process(conn, pool) do
+  defp transfer_if_open(conn) do
     if Mint.HTTP1.open?(conn) do
-      {:ok, conn} = Mint.HTTP1.controlling_process(conn, pool)
-      conn
+      {:ok, conn}
     else
-      conn
+      :closed
     end
   end
 
@@ -197,8 +193,7 @@ defmodule HTTP1Pool do
   # Transfer the conn to the caller.
   # If we lost the connection, then we remove it to try again.
   def handle_checkout(:checkout, {pid, _}, conn, pool_state) do
-    with {:ok, conn} <- Mint.HTTP1.set_mode(conn, :passive),
-         {:ok, conn} <- Mint.HTTP1.controlling_process(conn, pid) do
+    with {:ok, conn} <- Mint.HTTP1.set_mode(conn, :passive) do
       {:ok, conn, conn, pool_state}
     else
       _ -> {:remove, :closed, pool_state}
@@ -207,9 +202,11 @@ defmodule HTTP1Pool do
 
   @impl NimblePool
   # We got it back.
-  def handle_checkin(conn, _from, _old_conn, pool_state) do
-    case Mint.HTTP1.set_mode(conn, :active) do
-      {:ok, conn} -> {:ok, conn, pool_state}
+  def handle_checkin(state, _from, _old_conn, pool_state) do
+    with {:ok, conn} <- state,
+         {:ok, conn} <- Mint.HTTP1.set_mode(conn, :active) do
+      {:ok, conn, pool_state}
+    else
       {:error, _} -> {:remove, :closed, pool_state}
     end
   end

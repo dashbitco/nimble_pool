@@ -803,39 +803,6 @@ defmodule NimblePoolTest do
       assert_drained agent
     end
 
-    test "restarts on client exit/throw/error during checkout with precheckin state" do
-      parent = self()
-
-      {agent, pool} =
-        stateful_pool!(
-          init_worker: fn next -> {:ok, next, next} end,
-          handle_checkout: fn :checkout, _from, _next, pool_state ->
-            {:ok, :client_state_out, :server_state_out, pool_state}
-          end,
-          terminate_worker: fn reason, :client_state_in, state ->
-            send(parent, {:terminate, reason})
-            {:ok, state}
-          end,
-          init_worker: fn next -> {:ok, next, next} end,
-          terminate_worker: fn reason, _, state ->
-            send(parent, {:terminate, reason})
-            {:ok, state}
-          end
-        )
-
-      assert_raise RuntimeError, fn ->
-        NimblePool.checkout!(pool, :checkout, fn ref, :client_state_out ->
-          NimblePool.precheckin(ref, :client_state_in)
-          raise "oops"
-        end)
-      end
-
-      assert_receive {:terminate, :error}
-      NimblePool.stop(pool, :shutdown)
-      assert_receive {:terminate, :shutdown}
-      assert_drained agent
-    end
-
     test "restarts on init failure without blocking main loop" do
       parent = self()
 

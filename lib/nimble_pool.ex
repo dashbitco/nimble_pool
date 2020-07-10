@@ -64,6 +64,9 @@ defmodule NimblePool do
   Note this callback is synchronous and therefore will block the pool.
   Avoid performing long work in here, instead do as much work as
   possible on the client.
+
+  Once the connection is checked out, the worker won't receive any
+  messages targetted to `c:handle_info/2`.
   """
   @callback handle_checkout(maybe_wrapped_command :: term, from, worker_state, pool_state) ::
               {:ok, client_state, worker_state, pool_state}
@@ -73,12 +76,17 @@ defmodule NimblePool do
   @doc """
   Checks a worker in.
 
-  It receives the `client_state`, returned by the `checkout!/4` anonymous
-  function and it must return either `{:ok, worker_state}` or `{:remove, reason, pool_state}`.
+  It receives the `client_state`, returned by the `checkout!/4`
+  anonymous function and it must return either `{:ok, worker_state}`
+  or `{:remove, reason, pool_state}`.
 
   Note this callback is synchronous and therefore will block the pool.
   Avoid performing long work in here, instead do as much work as
   possible on the client.
+
+  Once the connection is checked in, it may immediately be handed
+  to another client, without traversing any of the messages in the
+  pool inbox.
 
   This callback is optional.
   """
@@ -263,19 +271,6 @@ defmodule NimblePool do
     end
   end
 
-  @doc """
-  Pre-checks the given `worker_state` in.
-
-  This must be called inside the `checkout!` callback.
-
-  This is useful to update the pool state before effectively
-  checking the state in, which is handy when transferring
-  resources that requires two steps.
-  """
-  def precheckin({pid, ref}, worker_state) do
-    send(pid, {__MODULE__, :precheckin, ref, worker_state})
-  end
-
   defp deadline(timeout) when is_integer(timeout) do
     System.monotonic_time() + System.convert_time_unit(timeout, :millisecond, :native)
   end
@@ -338,20 +333,6 @@ defmodule NimblePool do
       {:skip, exception, pool_state} ->
         state = remove_request(%{state | state: pool_state}, ref, mon_ref)
         {:reply, {:skipped, exception}, state}
-    end
-  end
-
-  @impl true
-  def handle_info({__MODULE__, :precheckin, ref, worker_client_state}, state) do
-    %{requests: requests} = state
-
-    case requests do
-      %{^ref => {pid, mon_ref, :state, _worker_server_state}} ->
-        requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_client_state})
-        {:noreply, %{state | requests: requests}}
-
-      %{} ->
-        exit(:unexpected_precheckin)
     end
   end
 
