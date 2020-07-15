@@ -271,6 +271,20 @@ defmodule NimblePool do
     end
   end
 
+  @doc """
+  Sends an `update` instruction to the pool about the checked out worker.
+
+  This must be called inside the `checkout!` callback with
+  the `from` value given to `checkout`.
+
+  This is useful to update the pool state before effectively
+  checking the state in, which is handy when transferring
+  resources that requires two steps.
+  """
+  def update({pid, ref}, command) do
+    send(pid, {__MODULE__, :update, ref, command})
+  end
+
   defp deadline(timeout) when is_integer(timeout) do
     System.monotonic_time() + System.convert_time_unit(timeout, :millisecond, :native)
   end
@@ -333,6 +347,21 @@ defmodule NimblePool do
       {:skip, exception, pool_state} ->
         state = remove_request(%{state | state: pool_state}, ref, mon_ref)
         {:reply, {:skipped, exception}, state}
+    end
+  end
+
+  @impl true
+  def handle_info({__MODULE__, :update, ref, command}, state) do
+    %{requests: requests, state: pool_state, worker: worker} = state
+
+    case requests do
+      %{^ref => {pid, mon_ref, :state, worker_state}} ->
+        {:ok, worker_state, pool_state} = worker.handle_update(command, worker_state, pool_state)
+        requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_state})
+        {:noreply, %{state | requests: requests, state: pool_state}}
+
+      %{} ->
+        exit(:unexpected_precheckin)
     end
   end
 

@@ -78,6 +78,10 @@ defmodule NimblePoolTest do
       TestAgent.next(pool_state, :handle_checkin, [client_state, from, worker_state, pool_state])
     end
 
+    def handle_update(command, worker_state, pool_state) do
+      TestAgent.next(pool_state, :handle_update, [command, worker_state, pool_state])
+    end
+
     def handle_info(message, worker_state) do
       TestAgent.next(worker_state, :handle_info, [message, worker_state])
     end
@@ -793,6 +797,42 @@ defmodule NimblePoolTest do
 
       assert_raise RuntimeError, fn ->
         NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+          raise "oops"
+        end)
+      end
+
+      assert_receive {:terminate, :error}
+      NimblePool.stop(pool, :shutdown)
+      assert_receive {:terminate, :shutdown}
+      assert_drained agent
+    end
+
+    test "restarts on client exit/throw/error during checkout with updated state" do
+      parent = self()
+
+      {agent, pool} =
+        stateful_pool!(
+          init_worker: fn next -> {:ok, next, next} end,
+          handle_checkout: fn :checkout, _from, _next, pool_state ->
+            {:ok, :client_state_out, :server_state_out, pool_state}
+          end,
+          handle_update: fn :update, _next, pool_state ->
+            {:ok, :updated_state, pool_state}
+          end,
+          terminate_worker: fn reason, :updated_state, pool_state ->
+            send(parent, {:terminate, reason})
+            {:ok, pool_state}
+          end,
+          init_worker: fn next -> {:ok, next, next} end,
+          terminate_worker: fn reason, _, pool_state ->
+            send(parent, {:terminate, reason})
+            {:ok, pool_state}
+          end
+        )
+
+      assert_raise RuntimeError, fn ->
+        NimblePool.checkout!(pool, :checkout, fn ref, :client_state_out ->
+          NimblePool.update(ref, :update)
           raise "oops"
         end)
       end
