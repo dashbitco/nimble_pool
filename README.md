@@ -239,7 +239,7 @@ Add `nimble_pool` to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
-  [{:nimble_pool, "~> 0.1"}]
+  [{:nimble_pool, "~> 0.2"}]
 end
 ```
 
