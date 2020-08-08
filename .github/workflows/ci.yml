@@ -11,6 +11,7 @@ jobs:
     name: mix test (Elixir ${{matrix.elixir}} | Erlang/OTP ${{matrix.otp}})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - elixir: 1.7.4
