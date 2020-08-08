@@ -39,6 +39,6 @@ jobs:
           mix local.hex --force
           mix local.rebar --force
           mix deps.get --only test
-      - run: mix compile --warnings-as-errors
+      - run: MIX_ENV=test mix compile --warnings-as-errors
         if: matrix.warnings_as_errors
       - run: mix test
