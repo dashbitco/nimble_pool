@@ -15,14 +15,19 @@ jobs:
         include:
           - elixir: 1.7.4
             otp: 19.3.6.13
+            warnings_as_errors: false
           - elixir: 1.8.2
             otp: 20.3.8.26
+            warnings_as_errors: false
           - elixir: 1.9.4
             otp: 20.3.8.26
+            warnings_as_errors: true # not 1.10 as its --warnigs-as-errors has bugs https://github.com/elixir-lang/elixir/issues/10073
           - elixir: 1.10.4
             otp: 21.3.8.16
+            warnings_as_errors: false
           - elixir: 1.10.4
             otp: 23.0.3
+            warnings_as_errors: false
     steps:
       - uses: actions/checkout@v2.3.2
       - uses: actions/setup-elixir@v1.4.0
@@ -34,6 +39,8 @@ jobs:
           mix local.hex --force
           mix local.rebar --force
           mix deps.get --only test
+      - run: mix compile --warnings-as-errors
+        if: matrix.warnings_as_errors
       - run: mix test
 
   check_formatted:
@@ -46,20 +53,3 @@ jobs:
           otp-version: 23.0.3
           elixir-version: 1.10.4
       - run: mix format --check-formatted
-
-  compile_without_warnings:
-    name: Compile without warnings
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2.3.2
-      - uses: actions/setup-elixir@v1.4.0
-        with:
-          otp-version: 22.3.4.5
-          elixir-version: 1.9.4 # not 1.10 as its --warnigs-as-errors has bugs https://github.com/elixir-lang/elixir/issues/10073
-      - name: Install Dependencies
-        run: |
-          mix local.hex --force
-          mix local.rebar --force
-          mix deps.get
-      - name: Compile without warnings
-        run: mix compile --warnings-as-errors
