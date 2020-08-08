@@ -12,22 +12,19 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        warnings_as_errors: [false]
         include:
           - elixir: 1.7.4
             otp: 19.3.6.13
-            warnings_as_errors: false
           - elixir: 1.8.2
             otp: 20.3.8.26
-            warnings_as_errors: false
           - elixir: 1.9.4
             otp: 20.3.8.26
             warnings_as_errors: true # not 1.10 as its --warnigs-as-errors has bugs https://github.com/elixir-lang/elixir/issues/10073
           - elixir: 1.10.4
             otp: 21.3.8.16
-            warnings_as_errors: false
           - elixir: 1.10.4
             otp: 23.0.3
-            warnings_as_errors: false
     steps:
       - uses: actions/checkout@v2.3.2
       - uses: actions/setup-elixir@v1.4.0
