@@ -4,10 +4,10 @@ defmodule NimblePoolTest do
   defmodule StatelessPool do
     @behaviour NimblePool
 
-    def init_pool([init_pool: fun] ++ rest), do: fun.(rest)
+    def init_pool([{:init_pool, fun} | rest]), do: fun.(rest)
     def init_pool(rest), do: {:ok, rest}
 
-    def init_worker([init_worker: fun] ++ rest = pool_state) do
+    def init_worker([{:init_worker, fun} | rest] = pool_state) do
       Tuple.append(fun.(rest), pool_state)
     end
 
