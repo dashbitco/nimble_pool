@@ -22,7 +22,7 @@ NimblePool may not be a good option to manage processes. Also avoid using Nimble
 
 ## Callbacks
 
-NimblePool has two types of callbacks. Worker callbacks and pool callbacaks. The worker callbacks configure the behaviour of each worker, such as initialization, checkin and checkout. The pool callbacks configure general pool behaviour, such as initialization, and potentially queueing and dequeuing in the future.
+NimblePool has two types of callbacks. Worker callbacks and pool callbacks. The worker callbacks configure the behaviour of each worker, such as initialization, checkin and checkout. The pool callbacks configure general pool behaviour, such as initialization, and potentially queueing and dequeuing in the future.
 
 ## Examples
 
@@ -65,7 +65,7 @@ defmodule PortPool do
             Port.connect(port, pid)
             {data, :ok}
           rescue
-            _ -> {data, :closed}
+            _ -> {data, :close}
           end
       after
         receive_timeout ->
@@ -94,8 +94,8 @@ defmodule PortPool do
     {:ok, port, pool_state}
   end
 
-  def handle_checkin(:close, _from, port, pool_state) do
-    {:remove, :closed}
+  def handle_checkin(:close, _from, _port, pool_state) do
+    {:remove, :closed, pool_state}
   end
 
   @impl NimblePool
