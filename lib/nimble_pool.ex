@@ -93,6 +93,17 @@ defmodule NimblePool do
   @callback handle_checkin(client_state, from, worker_state, pool_state) ::
               {:ok, worker_state, pool_state} | {:remove, user_reason, pool_state}
 
+
+  @doc """
+  Handles update instruction from checked out worker.
+
+  See `update/2` for more information.
+
+  This callback is optional.
+  """
+  @callback handle_update(message :: term, worker_state, pool_state) ::
+              {:ok, worker_state, pool_state}
+
   @doc """
   Receives a message in the worker.
 
@@ -156,6 +167,7 @@ defmodule NimblePool do
                       handle_checkin: 4,
                       handle_info: 2,
                       handle_enqueue: 2,
+                      handle_update: 3,
                       terminate_worker: 3
 
   @doc """

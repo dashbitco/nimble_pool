@@ -20,7 +20,7 @@ The downside of NimblePool is that, because all resources are under a single pro
 
 NimblePool may not be a good option to manage processes. Also avoid using NimblePool to manage resources that support multiplexing, such as HTTP 2 connections (in fact, pools are not a good option to manage resources with multiplexing in general).
 
-## Callbacks
+## Types of callbacks
 
 NimblePool has two types of callbacks. Worker callbacks and pool callbacks. The worker callbacks configure the behaviour of each worker, such as initialization, checkin and checkout. The pool callbacks configure general pool behaviour, such as initialization, and potentially queueing and dequeuing in the future.
 
