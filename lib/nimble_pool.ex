@@ -93,7 +93,6 @@ defmodule NimblePool do
   @callback handle_checkin(client_state, from, worker_state, pool_state) ::
               {:ok, worker_state, pool_state} | {:remove, user_reason, pool_state}
 
-
   @doc """
   Handles update instruction from checked out worker.
 
