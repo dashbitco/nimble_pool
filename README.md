@@ -6,7 +6,7 @@
 
 `NimblePool` is a tiny resource-pool implementation.
 
-Pools in the Erlang VM, and therefore in Elixir, are generally process-based: they manages a group of processes. The downside of said pools is that when they have to manage resources, such as sockets or ports, the additional process leads to overhead.
+Pools in the Erlang VM, and therefore in Elixir, are generally process-based: they manage a group of processes. The downside of said pools is that when they have to manage resources, such as sockets or ports, the additional process leads to overhead.
 
 In such pools, you usually end-up with two scenarios:
 
