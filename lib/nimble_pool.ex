@@ -202,10 +202,15 @@ defmodule NimblePool do
 
     * `:pool_size` - how many workers in the pool. Defaults to 10.
 
+    * `:strategy` - `:fifo` (the default) or `:lifo`. If resources are
+      established lazily, we recommend using `:lifo` as you cycle
+      through the minimal amount of resources necessary
+
   """
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
+    {strategy, opts} = Keyword.pop(opts, :strategy, :fifo)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -215,7 +220,7 @@ defmodule NimblePool do
       raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
     end
 
-    GenServer.start_link(__MODULE__, {worker, arg, pool_size}, opts)
+    GenServer.start_link(__MODULE__, {worker, arg, pool_size, strategy}, opts)
   end
 
   @doc """
@@ -318,7 +323,7 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size}) do
+  def init({worker, arg, pool_size, strategy}) do
     Process.flag(:trap_exit, true)
     _ = Code.ensure_loaded(worker)
 
@@ -336,7 +341,8 @@ defmodule NimblePool do
         monitors: %{},
         resources: resources,
         async: async,
-        state: pool_state
+        state: pool_state,
+        strategy: strategy
       }
 
       {:ok, state}
@@ -562,7 +568,7 @@ defmodule NimblePool do
       state = remove_request(state, ref, mon_ref)
       maybe_checkout(state)
     else
-      case :queue.out(resources) do
+      case queue_out(resources, state) do
         {{:value, worker_server_state}, resources} ->
           args = [command, from, worker_server_state, pool_state]
 
@@ -595,6 +601,9 @@ defmodule NimblePool do
       end
     end
   end
+
+  defp queue_out(resources, %{strategy: :fifo}), do: :queue.out(resources)
+  defp queue_out(resources, %{strategy: :lifo}), do: :queue.out_r(resources)
 
   defp past_deadline?(deadline) when is_integer(deadline) do
     System.monotonic_time() >= deadline

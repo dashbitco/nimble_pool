@@ -473,6 +473,81 @@ defmodule NimblePoolTest do
       assert Task.await(task1) == :result
       assert Task.await(task2) == :result
     end
+
+    test "fifo checkouts" do
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            init_worker: fn next -> {:ok, :worker2, next} end,
+            handle_checkout: fn :checkout, _from, :worker1, pool_state ->
+              {:ok, :client_state_out, :worker1, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, :worker1, pool_state ->
+              {:ok, :worker1, pool_state}
+            end,
+            handle_checkout: fn :checkout, _from, :worker2, pool_state ->
+              {:ok, :client_state_out, :worker2, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, :worker2, pool_state ->
+              {:ok, :worker1, pool_state}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 2
+        )
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               {:result, :client_state_in}
+             end) ==
+               :result
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               {:result, :client_state_in}
+             end) ==
+               :result
+
+      NimblePool.stop(pool, :shutdown)
+    end
+
+    test "lifo checkouts" do
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            init_worker: fn next -> {:ok, :worker2, next} end,
+            handle_checkout: fn :checkout, _from, :worker2, pool_state ->
+              {:ok, :client_state_out, :worker2, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, :worker2, pool_state ->
+              {:ok, :worker2, pool_state}
+            end,
+            handle_checkout: fn :checkout, _from, :worker2, pool_state ->
+              {:ok, :client_state_out, :worker2, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, :worker2, pool_state ->
+              {:ok, :worker2, pool_state}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 2,
+          strategy: :lifo
+        )
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               {:result, :client_state_in}
+             end) ==
+               :result
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               {:result, :client_state_in}
+             end) ==
+               :result
+
+      NimblePool.stop(pool, :shutdown)
+    end
   end
 
   describe "handle_info" do
