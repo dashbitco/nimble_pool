@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3 (2020-10-24)
+
+* Support `lazy: true` instead of `strategy: :lifo` (v0.2.2 has been retired)
+
 ## v0.2.2 (2020-10-23)
 
 * Support `strategy: :lifo` for queue handling
