@@ -202,15 +202,14 @@ defmodule NimblePool do
 
     * `:pool_size` - how many workers in the pool. Defaults to 10.
 
-    * `:strategy` - `:fifo` (the default) or `:lifo`. If resources are
-      established lazily, we recommend using `:lifo` as you cycle
-      through the minimal amount of resources necessary
+    * `:lazy` - When `true`, workers are started lazily, only when necessary.
+      Defaults to `false`.
 
   """
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
-    {strategy, opts} = Keyword.pop(opts, :strategy, :fifo)
+    {lazy, opts} = Keyword.pop(opts, :lazy, false)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -220,7 +219,7 @@ defmodule NimblePool do
       raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
     end
 
-    GenServer.start_link(__MODULE__, {worker, arg, pool_size, strategy}, opts)
+    GenServer.start_link(__MODULE__, {worker, arg, pool_size, lazy}, opts)
   end
 
   @doc """
@@ -323,16 +322,21 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size, strategy}) do
+  def init({worker, arg, pool_size, lazy}) do
     Process.flag(:trap_exit, true)
     _ = Code.ensure_loaded(worker)
+    lazy = if lazy, do: pool_size, else: nil
 
     with {:ok, pool_state} <- do_init_pool(worker, arg) do
       {pool_state, resources, async} =
-        Enum.reduce(1..pool_size, {pool_state, :queue.new(), %{}}, fn
-          _, {pool_state, resources, async} ->
-            init_worker(worker, pool_state, resources, async)
-        end)
+        if is_nil(lazy) do
+          Enum.reduce(1..pool_size, {pool_state, :queue.new(), %{}}, fn
+            _, {pool_state, resources, async} ->
+              init_worker(worker, pool_state, resources, async)
+          end)
+        else
+          {pool_state, :queue.new(), %{}}
+        end
 
       state = %{
         worker: worker,
@@ -342,7 +346,7 @@ defmodule NimblePool do
         resources: resources,
         async: async,
         state: pool_state,
-        strategy: strategy
+        lazy: lazy
       }
 
       {:ok, state}
@@ -494,6 +498,9 @@ defmodule NimblePool do
   defp remove_async_ref(ref, state) do
     %{async: async, resources: resources, worker: worker, state: pool_state} = state
 
+    # If an async worker failed to start, we try to start another one
+    # immediately, even if the pool is lazy, as we assume there is an
+    # immediate need for this resource.
     {pool_state, resources, async} =
       init_worker(worker, pool_state, resources, Map.delete(async, ref))
 
@@ -561,14 +568,14 @@ defmodule NimblePool do
   end
 
   defp maybe_checkout(command, mon_ref, deadline, {pid, ref} = from, state) do
-    %{resources: resources, requests: requests, worker: worker, queue: queue, state: pool_state} =
-      state
-
     if past_deadline?(deadline) do
       state = remove_request(state, ref, mon_ref)
       maybe_checkout(state)
     else
-      case queue_out(resources, state) do
+      %{resources: resources, requests: requests, worker: worker, queue: queue, state: pool_state} =
+        state = init_worker_if_lazy_and_empty(state)
+
+      case :queue.out(resources) do
         {{:value, worker_server_state}, resources} ->
           args = [command, from, worker_server_state, pool_state]
 
@@ -602,8 +609,17 @@ defmodule NimblePool do
     end
   end
 
-  defp queue_out(resources, %{strategy: :fifo}), do: :queue.out(resources)
-  defp queue_out(resources, %{strategy: :lifo}), do: :queue.out_r(resources)
+  defp init_worker_if_lazy_and_empty(%{lazy: nil} = state), do: state
+
+  defp init_worker_if_lazy_and_empty(%{lazy: lazy, resources: resources} = state) do
+    if :queue.is_empty(resources) do
+      %{async: async, worker: worker, state: pool_state} = state
+      {pool_state, resources, async} = init_worker(worker, pool_state, resources, async)
+      %{state | async: async, resources: resources, state: pool_state, lazy: lazy - 1}
+    else
+      state
+    end
+  end
 
   defp past_deadline?(deadline) when is_integer(deadline) do
     System.monotonic_time() >= deadline
@@ -613,8 +629,13 @@ defmodule NimblePool do
 
   defp remove_worker(reason, worker_server_state, state) do
     state = maybe_terminate_worker(reason, worker_server_state, state)
-    schedule_init()
-    state
+
+    if lazy = state.lazy do
+      %{state | lazy: lazy + 1}
+    else
+      schedule_init()
+      state
+    end
   end
 
   defp maybe_terminate_worker(reason, worker_server_state, state) do

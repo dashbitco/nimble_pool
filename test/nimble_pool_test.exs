@@ -474,7 +474,7 @@ defmodule NimblePoolTest do
       assert Task.await(task2) == :result
     end
 
-    test "fifo checkouts" do
+    test "eager checkouts" do
       {_, pool} =
         stateful_pool!(
           [
@@ -511,29 +511,27 @@ defmodule NimblePoolTest do
       NimblePool.stop(pool, :shutdown)
     end
 
-    test "lifo checkouts" do
+    test "lazy checkouts" do
       {_, pool} =
         stateful_pool!(
           [
             init_worker: fn next -> {:ok, :worker1, next} end,
-            init_worker: fn next -> {:ok, :worker2, next} end,
-            handle_checkout: fn :checkout, _from, :worker2, pool_state ->
-              {:ok, :client_state_out, :worker2, pool_state}
+            handle_checkout: fn :checkout, _from, :worker1, pool_state ->
+              {:ok, :client_state_out, :worker1, pool_state}
             end,
-            handle_checkin: fn :client_state_in, _from, :worker2, pool_state ->
-              {:ok, :worker2, pool_state}
+            handle_checkin: fn :client_state_in, _from, :worker1, pool_state ->
+              {:ok, :worker1, pool_state}
             end,
-            handle_checkout: fn :checkout, _from, :worker2, pool_state ->
-              {:ok, :client_state_out, :worker2, pool_state}
+            handle_checkout: fn :checkout, _from, :worker1, pool_state ->
+              {:ok, :client_state_out, :worker1, pool_state}
             end,
-            handle_checkin: fn :client_state_in, _from, :worker2, pool_state ->
-              {:ok, :worker2, pool_state}
+            handle_checkin: fn :client_state_in, _from, :worker1, pool_state ->
+              {:ok, :worker1, pool_state}
             end,
-            terminate_worker: fn _reason, _, state -> {:ok, state} end,
             terminate_worker: fn _reason, _, state -> {:ok, state} end
           ],
           pool_size: 2,
-          strategy: :lifo
+          lazy: true
         )
 
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
@@ -543,6 +541,56 @@ defmodule NimblePoolTest do
 
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
                {:result, :client_state_in}
+             end) ==
+               :result
+
+      NimblePool.stop(pool, :shutdown)
+    end
+
+    test "lazy concurrent checkouts" do
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            handle_checkout: fn :checkout1, _from, :worker1, pool_state ->
+              {:ok, :client_state_out1, :worker1, pool_state}
+            end,
+            init_worker: fn next -> {:ok, :worker2, next} end,
+            handle_checkout: fn :checkout2, _from, :worker2, pool_state ->
+              {:ok, :client_state_out2, :worker2, pool_state}
+            end,
+            handle_checkin: fn :client_state_in1, _from, :worker1, pool_state ->
+              {:ok, :worker1, pool_state}
+            end,
+            handle_checkin: fn :client_state_in2, _from, :worker2, pool_state ->
+              {:ok, :worker2, pool_state}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 2,
+          lazy: true
+        )
+
+      parent = self()
+
+      {:ok, child} =
+        Task.start_link(fn ->
+          assert NimblePool.checkout!(pool, :checkout1, fn _ref, :client_state_out1 ->
+                   send(parent, :checked_out)
+                   assert_receive(:resume)
+                   {:result, :client_state_in1}
+                 end) == :result
+
+          send(parent, :checked_in)
+        end)
+
+      assert_receive :checked_out
+
+      assert NimblePool.checkout!(pool, :checkout2, fn _ref, :client_state_out2 ->
+               send(child, :resume)
+               assert_receive :checked_in
+               {:result, :client_state_in2}
              end) ==
                :result
 
