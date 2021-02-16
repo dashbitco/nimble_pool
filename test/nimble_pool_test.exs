@@ -450,7 +450,6 @@ defmodule NimblePoolTest do
       task1 =
         Task.async(fn ->
           NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
-            Process.sleep(11)
             send(parent, :lock)
             assert_receive :release
             {:result, :client_state_in}
@@ -462,7 +461,6 @@ defmodule NimblePoolTest do
       task2 =
         Task.async(fn ->
           NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
-            Process.sleep(11)
             send(parent, :lock)
             assert_receive :release
             {:result, :client_state_in}
@@ -474,7 +472,7 @@ defmodule NimblePoolTest do
       task3 =
         Task.async(fn ->
           assert catch_exit(
-                   NimblePool.checkout!(pool, :checkout, fn _, _ -> raise "never invoked" end, 10)
+                   NimblePool.checkout!(pool, :checkout, fn _, _ -> raise "never invoked" end, 1)
                  )
         end)
 
@@ -509,7 +507,6 @@ defmodule NimblePoolTest do
       task1 =
         Task.async(fn ->
           NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
-            Process.sleep(11)
             send(parent, :lock)
             assert_receive :release
             {:result, :client_state_in}
@@ -521,7 +518,6 @@ defmodule NimblePoolTest do
       task2 =
         Task.async(fn ->
           NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
-            Process.sleep(11)
             send(parent, :lock)
             assert_receive :release
             {:result, :client_state_in}
@@ -533,7 +529,7 @@ defmodule NimblePoolTest do
       task3 =
         Task.async(fn ->
           assert catch_exit(
-                   NimblePool.checkout!(pool, :checkout, fn _, _ -> raise "never invoked" end, 10)
+                   NimblePool.checkout!(pool, :checkout, fn _, _ -> raise "never invoked" end, 1)
                  )
         end)
 
