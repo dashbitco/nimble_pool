@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.4 (2020-02-16)
+
+* Fix a bug with lazy pool starting more connections than specified
+
 ## v0.2.3 (2020-10-24)
 
 * Support `lazy: true` instead of `strategy: :lifo` (v0.2.2 has been retired)
