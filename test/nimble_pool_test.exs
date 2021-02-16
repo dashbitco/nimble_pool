@@ -428,7 +428,7 @@ defmodule NimblePoolTest do
       assert Task.await(task2) == :result
     end
 
-    test "concurrent checkouts" do
+    test "concurrent checkouts on eager pool" do
       parent = self()
 
       pool =
@@ -443,12 +443,14 @@ defmodule NimblePoolTest do
             end,
             terminate_worker: fn _reason, [], state -> {:ok, state} end
           ],
-          pool_size: 2
+          pool_size: 2,
+          lazy: false
         )
 
       task1 =
         Task.async(fn ->
           NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+            Process.sleep(11)
             send(parent, :lock)
             assert_receive :release
             {:result, :client_state_in}
@@ -460,6 +462,7 @@ defmodule NimblePoolTest do
       task2 =
         Task.async(fn ->
           NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+            Process.sleep(11)
             send(parent, :lock)
             assert_receive :release
             {:result, :client_state_in}
@@ -467,6 +470,75 @@ defmodule NimblePoolTest do
         end)
 
       assert_receive :lock
+
+      task3 =
+        Task.async(fn ->
+          assert catch_exit(
+                   NimblePool.checkout!(pool, :checkout, fn _, _ -> raise "never invoked" end, 10)
+                 )
+        end)
+
+      assert Task.await(task3) ==
+               {:timeout, {NimblePool, :checkout, [pool]}}
+
+      send(task1.pid, :release)
+      send(task2.pid, :release)
+      assert Task.await(task1) == :result
+      assert Task.await(task2) == :result
+    end
+
+    test "concurrent checkouts on lazy pool" do
+      parent = self()
+
+      pool =
+        stateless_pool!(
+          [
+            init_worker: fn next -> {:ok, next} end,
+            handle_checkout: fn :checkout, _from, next, pool_state ->
+              {:ok, :client_state_out, next, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, next, pool_state ->
+              {:ok, next, pool_state}
+            end,
+            terminate_worker: fn _reason, [], state -> {:ok, state} end
+          ],
+          pool_size: 2,
+          lazy: true
+        )
+
+      task1 =
+        Task.async(fn ->
+          NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+            Process.sleep(11)
+            send(parent, :lock)
+            assert_receive :release
+            {:result, :client_state_in}
+          end)
+        end)
+
+      assert_receive :lock
+
+      task2 =
+        Task.async(fn ->
+          NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+            Process.sleep(11)
+            send(parent, :lock)
+            assert_receive :release
+            {:result, :client_state_in}
+          end)
+        end)
+
+      assert_receive :lock
+
+      task3 =
+        Task.async(fn ->
+          assert catch_exit(
+                   NimblePool.checkout!(pool, :checkout, fn _, _ -> raise "never invoked" end, 10)
+                 )
+        end)
+
+      assert Task.await(task3) ==
+               {:timeout, {NimblePool, :checkout, [pool]}}
 
       send(task1.pid, :release)
       send(task2.pid, :release)

@@ -612,7 +612,7 @@ defmodule NimblePool do
   defp init_worker_if_lazy_and_empty(%{lazy: nil} = state), do: state
 
   defp init_worker_if_lazy_and_empty(%{lazy: lazy, resources: resources} = state) do
-    if :queue.is_empty(resources) do
+    if lazy > 0 and :queue.is_empty(resources) do
       %{async: async, worker: worker, state: pool_state} = state
       {pool_state, resources, async} = init_worker(worker, pool_state, resources, async)
       %{state | async: async, resources: resources, state: pool_state, lazy: lazy - 1}
