@@ -14,8 +14,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - elixir: 1.7.4
-            otp: 19.3.6.13
           - elixir: 1.8.2
             otp: 20.3.8.26
           - elixir: 1.9.4
@@ -27,8 +25,8 @@ jobs:
             otp: 23.0.3
             check_formatted: true
     steps:
-      - uses: actions/checkout@v2.3.2
-      - uses: actions/setup-elixir@v1.4.0
+      - uses: actions/checkout@v2
+      - uses: erlef/setup-elixir@v1
         with:
           otp-version: ${{matrix.otp}}
           elixir-version: ${{matrix.elixir}}
