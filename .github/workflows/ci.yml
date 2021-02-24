@@ -45,4 +45,3 @@ jobs:
         if: ${{ matrix.lint }}
 
       - run: mix test
-
