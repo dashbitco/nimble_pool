@@ -120,28 +120,33 @@ defmodule HTTP1Pool do
 
   First we start the connection:
 
-      child = {NimblePool, worker: {HTTP1Pool, {:http, "example.com", 80}}, name: HTTP1Pool}
+      child = {NimblePool, worker: {HTTP1Pool, {:https, "elixir-lang.org", 443}}, name: HTTP1Pool}
       Supervisor.start_link([child], strategy: :one_for_one)
 
   Then we can access it:
 
-      iex> HTTP1Pool.get(HTTP1Pool, "/foo")
-      {:ok, %{...}}
+      iex> HTTP1Pool.get(HTTP1Pool, "/")
+      {:ok, %{status: 200, ...}}
 
   """
   def get(pool, path, opts \\ []) do
     pool_timeout = Keyword.get(opts, :pool_timeout, 5000)
     receive_timeout = Keyword.get(opts, :receive_timeout, 15000)
 
-    NimblePool.checkout!(pool, :checkout, fn _from, conn ->
-      {kind, conn, result_or_error} =
-        with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil),
-             {:ok, conn, result} <- receive_response([], conn, ref, %{}, receive_timeout) do
-          {{:ok, result}, transfer_if_open(conn)}
-        end
+    NimblePool.checkout!(
+      pool,
+      :checkout,
+      fn _from, conn ->
+        {{kind, result_or_error}, conn} =
+          with {:ok, conn, ref} <- Mint.HTTP1.request(conn, "GET", path, [], nil),
+               {:ok, conn, result} <- receive_response([], conn, ref, %{}, receive_timeout) do
+            {{:ok, result}, transfer_if_open(conn)}
+          end
 
-      {{kind, result_or_error}, conn}
-    end, pool_timeout)
+        {{kind, result_or_error}, conn}
+      end,
+      pool_timeout
+    )
   end
 
   defp transfer_if_open(conn) do
@@ -192,7 +197,7 @@ defmodule HTTP1Pool do
   @impl NimblePool
   # Transfer the conn to the caller.
   # If we lost the connection, then we remove it to try again.
-  def handle_checkout(:checkout, {pid, _}, conn, pool_state) do
+  def handle_checkout(:checkout, _from, conn, pool_state) do
     with {:ok, conn} <- Mint.HTTP1.set_mode(conn, :passive) do
       {:ok, conn, conn, pool_state}
     else
@@ -224,7 +229,7 @@ defmodule HTTP1Pool do
   @impl NimblePool
   # On terminate, effectively close it.
   # This will succeed even if it was already closed or if we don't own it.
-  def terminate(_reason, conn, pool_state) do
+  def terminate_worker(_reason, conn, pool_state) do
     Mint.HTTP1.close(conn)
     {:ok, pool_state}
   end
