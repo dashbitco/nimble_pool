@@ -33,13 +33,17 @@ defmodule NimblePool.MixProject do
     [
       main: "NimblePool",
       source_ref: "v#{@version}",
-      source_url: @url
+      source_url: @url,
+      groups_for_functions: [
+        "Worker callbacks": &(&1[:callback] == :worker),
+        "Pool callbacks": &(&1[:callback] == :pool)
+      ]
     ]
   end
 
   defp package do
     %{
-      licenses: ["Apache 2"],
+      licenses: ["Apache-2.0"],
       maintainers: ["José Valim"],
       links: %{"GitHub" => @url}
     }
