@@ -22,7 +22,7 @@ NimblePool may not be a good option to manage processes. Also avoid using Nimble
 
 ## Types of callbacks
 
-NimblePool has two types of callbacks. Worker callbacks and pool callbacks. The worker callbacks configure the behaviour of each worker, such as initialization, checkin and checkout. The pool callbacks configure general pool behaviour, such as initialization, and potentially queueing and dequeuing in the future.
+NimblePool has two types of callbacks. Worker callbacks and pool callbacks. The worker callbacks configure the behaviour of each worker, such as initialization, checkin and checkout. The pool callbacks configure general pool behaviour, such as initialization and queueing.
 
 ## Examples
 

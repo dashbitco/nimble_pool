@@ -26,6 +26,7 @@ defmodule NimblePool do
   If you need to perform long initialization, consider using the
   `{:async, fun}` return type.
   """
+  @doc callback: :worker
   @callback init_worker(pool_state) ::
               {:ok, worker_state, pool_state} | {:async, (() -> worker_state), pool_state}
 
@@ -44,6 +45,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
+  @doc callback: :pool
   @callback init_pool(init_arg) :: {:ok, pool_state} | :ignore | {:stop, reason :: any()}
 
   @doc """
@@ -51,8 +53,8 @@ defmodule NimblePool do
 
   It receives `maybe_wrapped_command`. The `command` is given to the `checkout!/4`
   call and may optionally be wrapped by `c:handle_enqueue/2`. It must return either
-  `{:ok, client_state, worker_state}`, `{:remove, reason, pool_state}`, or
-  `{:skip, Exception.t(), pool_state}`.
+  `{:ok, client_state, worker_state, pool_state}`, `{:remove, reason, pool_state}`,
+  or `{:skip, Exception.t(), pool_state}`.
 
   If `:remove` is returned, `NimblePool` will attempt to checkout another
   worker.
@@ -68,6 +70,7 @@ defmodule NimblePool do
   Once the connection is checked out, the worker won't receive any
   messages targetted to `c:handle_info/2`.
   """
+  @doc callback: :worker
   @callback handle_checkout(maybe_wrapped_command :: term, from, worker_state, pool_state) ::
               {:ok, client_state, worker_state, pool_state}
               | {:remove, user_reason, pool_state}
@@ -77,8 +80,8 @@ defmodule NimblePool do
   Checks a worker in.
 
   It receives the `client_state`, returned by the `checkout!/4`
-  anonymous function and it must return either `{:ok, worker_state}`
-  or `{:remove, reason, pool_state}`.
+  anonymous function and it must return either
+  `{:ok, worker_state, pool_state}` or `{:remove, reason, pool_state}`.
 
   Note this callback is synchronous and therefore will block the pool.
   Avoid performing long work in here, instead do as much work as
@@ -90,6 +93,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
+  @doc callback: :worker
   @callback handle_checkin(client_state, from, worker_state, pool_state) ::
               {:ok, worker_state, pool_state} | {:remove, user_reason, pool_state}
 
@@ -100,6 +104,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
+  @doc callback: :worker
   @callback handle_update(message :: term, worker_state, pool_state) ::
               {:ok, worker_state, pool_state}
 
@@ -114,6 +119,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
+  @doc callback: :worker
   @callback handle_info(message :: term, worker_state) ::
               {:ok, worker_state} | {:remove, user_reason}
 
@@ -131,6 +137,7 @@ defmodule NimblePool do
 
   This callback is optional.
   """
+  @doc callback: :pool
   @callback handle_enqueue(command :: term, pool_state) ::
               {:ok, maybe_wrapped_command :: term, pool_state}
               | {:skip, Exception.t(), pool_state}
@@ -150,11 +157,12 @@ defmodule NimblePool do
   It receives the latest known `worker_state`, which may not
   be the latest state. For example, if a client checksout the
   state and crashes, we don't fully know the `client_state`,
-  so the `terminate` callback needs to take such scenarios
+  so the `terminate_state` callback needs to take such scenarios
   into account.
 
   This callback is optional.
   """
+  @doc callback: :pool
   @callback terminate_worker(
               :DOWN | :timeout | :throw | :error | :exit | user_reason,
               worker_state,
