@@ -68,7 +68,7 @@ defmodule NimblePool do
   possible on the client.
 
   Once the connection is checked out, the worker won't receive any
-  messages targetted to `c:handle_info/2`.
+  messages targeted to `c:handle_info/2`.
   """
   @doc callback: :worker
   @callback handle_checkout(maybe_wrapped_command :: term, from, worker_state, pool_state) ::
