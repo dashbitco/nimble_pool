@@ -218,6 +218,7 @@ defmodule NimblePool do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
     {lazy, opts} = Keyword.pop(opts, :lazy, false)
+    {resource_idle_timeout, opts} = Keyword.pop(opts, :resource_idle_timeout, nil)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -227,7 +228,7 @@ defmodule NimblePool do
       raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
     end
 
-    GenServer.start_link(__MODULE__, {worker, arg, pool_size, lazy}, opts)
+    GenServer.start_link(__MODULE__, {worker, arg, pool_size, lazy, resource_idle_timeout}, opts)
   end
 
   @doc """
@@ -330,10 +331,14 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size, lazy}) do
+  def init({worker, arg, pool_size, lazy, resource_idle_timeout}) do
     Process.flag(:trap_exit, true)
     _ = Code.ensure_loaded(worker)
     lazy = if lazy, do: pool_size, else: nil
+
+    if resource_idle_timeout do
+      :timer.send_interval(resource_idle_timeout, :verify_idle_resources)
+    end
 
     with {:ok, pool_state} <- do_init_pool(worker, arg) do
       {pool_state, resources, async} =
@@ -479,6 +484,17 @@ defmodule NimblePool do
       %{} ->
         maybe_handle_info(reply, state)
     end
+  end
+
+  @impl true
+  def handle_info(:verify_idle_resources, %{resources: resources} = state) do
+    for {worker_server_state, _} <- :queue.to_list(resources) do
+      IO.puts("Executing verify idle")
+      IO.inspect(worker_server_state)
+      maybe_terminate_worker(:idle_timeout, worker_server_state, state)
+    end
+
+    {:noreply, state}
   end
 
   @impl true
