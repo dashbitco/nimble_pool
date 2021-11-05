@@ -401,7 +401,8 @@ defmodule NimblePool do
         resources: resources,
         async: async,
         state: pool_state,
-        lazy: lazy
+        lazy: lazy,
+        resource_idle_timeout: resource_idle_timeout
       }
 
       {:ok, state}
@@ -530,14 +531,41 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_info(:verify_idle_resources, %{resources: resources} = state) do
-    for {worker_server_state, _} <- :queue.to_list(resources) do
-      IO.puts("Executing verify idle")
-      IO.inspect(worker_server_state)
-      maybe_terminate_worker(:idle_timeout, worker_server_state, state)
-    end
+  def handle_info(
+        :verify_idle_resources,
+        %{resources: resources, resource_idle_timeout: resource_idle_timeout} = state
+      ) do
+    now_in_ms = System.monotonic_time(:millisecond)
 
-    {:noreply, state}
+    result =
+      Enum.reduce_while(:queue.to_list(resources), {:queue.new(), state}, fn resource, acc ->
+        {worker_server_state, worker_metadata} = resource
+        {acc_queue, acc_state} = acc
+        time_diff = abs(worker_metadata.enqueued_at - now_in_ms)
+
+        if(time_diff >= resource_idle_timeout) do
+          case maybe_ping_worker({worker_server_state, worker_metadata}, state) do
+            {:stop, state} ->
+              {:halt, {:stop, state}}
+
+            state ->
+              current_idle_hits = worker_metadata.idle_hits
+              new_metadata = Map.put(worker_metadata, :idle_hits, current_idle_hits + 1)
+              new_resource = {worker_server_state, new_metadata}
+              {:cont, {:queue.in(new_resource, acc_queue), state}}
+          end
+        else
+          {:cont, {:queue.in(resource, acc_queue), acc_state}}
+        end
+      end)
+
+    case result do
+      {:stop, state} ->
+        {:stop, {:shutdown, :idle_timeout}, state}
+
+      {resources, state} ->
+        {:noreply, %{state | resources: resources}}
+    end
   end
 
   @impl true
@@ -705,18 +733,21 @@ defmodule NimblePool do
     end
   end
 
-  defp maybe_terminate_worker(:idle_timeout, worker_server_state, state) do
+  defp maybe_ping_worker({worker_server_state, worker_metadata}, state) do
     %{worker: worker, state: pool_state} = state
 
-    if function_exported?(worker, :terminate_worker, 3) do
-      args = [:idle_timeout, worker_server_state, pool_state]
+    if function_exported?(worker, :handle_ping, 3) do
+      args = [worker_server_state, worker_metadata, pool_state]
 
-      case apply_worker_callback(worker, :terminate_worker, args) do
-        {:ok, pool_state} ->
-          %{state | state: pool_state}
+      case apply_worker_callback(worker, :handle_ping, args) do
+        :terminate_worker ->
+          maybe_terminate_worker(:idle_timeout, worker_server_state, state)
 
-        {:remove, _reason} ->
+        :nothing ->
           state
+
+        :terminate_pool ->
+          {:stop, state}
 
         other ->
           raise """
