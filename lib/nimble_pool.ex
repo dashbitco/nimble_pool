@@ -20,12 +20,9 @@ defmodule NimblePool do
 
     * enqueued_at: `System.monotonic_time(:millisecond)`. Updated whenever a worker is checked in
 
-    * idle_hits: Count how many times the resource was pinged due to idle timeout and did not get terminated.
-    Updated to 0 every check in.
   """
   @type worker_metadata :: %{
-          enqueued_at: integer(),
-          idle_hits: non_neg_integer()
+          enqueued_at: integer()
         }
 
   @doc """
@@ -191,21 +188,20 @@ defmodule NimblePool do
   for longer than `:resource_idle_timeout` pool configuration millisecond.
 
   This callback must return some of the following values:
-    * `:terminate_worker`: The pool will proceed to the standard worker termination
+    * `{:ok, worker_state}`: Updates worker state and increase metadata's idle hits by 1
+
+    * `{:remove, user_reason}`:The pool will proceed to the standard worker termination
         defined in `terminate_worker/3` with reason `:idle_timenout`
 
-    * `:terminate_pool`: The entire pool process will be terminated, and `terminate_worker/3`
-        will be called for every worker available.
-
-    * `:nothing`: Just increase worker`s metadata idle hits by 1
+    * `{:stop, reason}`: The entire pool process will be terminated, and `terminate_worker/3`
+        will be called for every worker on the pool.
   """
   @doc callback: :worker
   @callback handle_ping(
               worker_state,
-              worker_metadata,
               pool_state
             ) ::
-              :terminate_worker | :terminate_pool | :nothing
+              {:ok, worker_state} | {:remove, user_reason} | {:stop, user_reason()}
 
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
@@ -213,7 +209,7 @@ defmodule NimblePool do
                       handle_enqueue: 2,
                       handle_update: 3,
                       terminate_worker: 3,
-                      handle_ping: 3
+                      handle_ping: 2
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -379,7 +375,7 @@ defmodule NimblePool do
     lazy = if lazy, do: pool_size, else: nil
 
     if resource_idle_timeout do
-      :timer.send_interval(resource_idle_timeout, :verify_idle_resources)
+      :timer.send_interval(resource_idle_timeout, :check_idle)
     end
 
     with {:ok, pool_state} <- do_init_pool(worker, arg) do
@@ -531,40 +527,17 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_info(
-        :verify_idle_resources,
-        %{resources: resources, resource_idle_timeout: resource_idle_timeout} = state
-      ) do
+  def handle_info(:check_idle, %{resources: resources} = state) do
     now_in_ms = System.monotonic_time(:millisecond)
+    resources_list = :queue.to_list(resources)
 
-    result =
-      Enum.reduce_while(:queue.to_list(resources), {:queue.new(), state}, fn resource, acc ->
-        {worker_server_state, worker_metadata} = resource
-        {acc_queue, acc_state} = acc
-        time_diff = abs(worker_metadata.enqueued_at - now_in_ms)
+    case check_idle_resources(resources_list, now_in_ms, state) do
+      {:ok, new_resources, new_state} ->
+        IO.puts("-- Finish cycle --")
+        {:noreply, %{new_state | resources: new_resources}}
 
-        if(time_diff >= resource_idle_timeout) do
-          case maybe_ping_worker({worker_server_state, worker_metadata}, state) do
-            {:stop, state} ->
-              {:halt, {:stop, state}}
-
-            state ->
-              current_idle_hits = worker_metadata.idle_hits
-              new_metadata = Map.put(worker_metadata, :idle_hits, current_idle_hits + 1)
-              new_resource = {worker_server_state, new_metadata}
-              {:cont, {:queue.in(new_resource, acc_queue), state}}
-          end
-        else
-          {:cont, {:queue.in(resource, acc_queue), acc_state}}
-        end
-      end)
-
-    case result do
-      {:stop, state} ->
-        {:stop, {:shutdown, :idle_timeout}, state}
-
-      {resources, state} ->
-        {:noreply, %{state | resources: resources}}
+      {:stop, reason, state} ->
+        {:stop, {:shutdown, reason}, state}
     end
   end
 
@@ -733,29 +706,65 @@ defmodule NimblePool do
     end
   end
 
-  defp maybe_ping_worker({worker_server_state, worker_metadata}, state) do
+  defp check_idle_resources(resources_list, now_in_ms, state) do
+    do_check_idle_resources(resources_list, now_in_ms, state, [])
+  end
+
+  defp do_check_idle_resources([], _now_in_ms, state, new_resources_list) do
+    {:ok, :queue.from_list(new_resources_list), state}
+  end
+
+  defp do_check_idle_resources([h | t] = resources_list, now_in_ms, state, new_resources_list) do
+    {worker_server_state, worker_metadata} = h
+    time_diff = abs(worker_metadata.enqueued_at - now_in_ms)
+
+    if time_diff >= state.resource_idle_timeout do
+      case maybe_ping_worker(worker_server_state, state) do
+        {:ok, new_worker_state} ->
+          new_resource = {new_worker_state, worker_metadata}
+          new_resources_list = new_resources_list ++ [new_resource]
+          do_check_idle_resources(t, now_in_ms, state, new_resources_list)
+
+        {:remove, new_state} ->
+          do_check_idle_resources(t, now_in_ms, new_state, new_resources_list)
+
+        {:stop, reason} ->
+          {:stop, reason, state}
+
+        new_state ->
+          {:ok, :queue.from_list(new_resources_list ++ resources_list), new_state}
+      end
+    else
+      {:ok, :queue.from_list(new_resources_list ++ resources_list), state}
+    end
+  end
+
+  defp maybe_ping_worker(worker_server_state, state) do
     %{worker: worker, state: pool_state} = state
 
-    if function_exported?(worker, :handle_ping, 3) do
-      args = [worker_server_state, worker_metadata, pool_state]
+    if function_exported?(worker, :handle_ping, 2) do
+      args = [worker_server_state, pool_state]
 
       case apply_worker_callback(worker, :handle_ping, args) do
-        :terminate_worker ->
-          maybe_terminate_worker(:idle_timeout, worker_server_state, state)
+        {:remove, user_reason} ->
+          new_state = remove_worker(user_reason, worker_server_state, state)
+          {:remove, new_state}
 
-        :nothing ->
-          state
+        {:ok, worker_state} ->
+          {:ok, worker_state}
 
-        :terminate_pool ->
-          {:stop, state}
+        {:stop, user_reason} ->
+          {:stop, user_reason}
 
         other ->
           raise """
-          unexpected return from #{inspect(worker)}.terminate_worker/3.
+          unexpected return from #{inspect(worker)}.handle_ping/3.
 
           Expected:
 
-              {:ok, pool_state}
+            {:remove, reason}
+            | {:ok, worker_state}
+            | {:stop, reason}
 
           Got: #{inspect(other)}
           """
