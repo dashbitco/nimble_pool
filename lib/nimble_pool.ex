@@ -533,7 +533,6 @@ defmodule NimblePool do
 
     case check_idle_resources(resources_list, now_in_ms, state) do
       {:ok, new_resources, new_state} ->
-        IO.puts("-- Finish cycle --")
         {:noreply, %{new_state | resources: new_resources}}
 
       {:stop, reason, state} ->
@@ -746,12 +745,12 @@ defmodule NimblePool do
       args = [worker_server_state, pool_state]
 
       case apply_worker_callback(worker, :handle_ping, args) do
+        {:ok, worker_state} ->
+          {:ok, worker_state}
+
         {:remove, user_reason} ->
           new_state = remove_worker(user_reason, worker_server_state, state)
           {:remove, new_state}
-
-        {:ok, worker_state} ->
-          {:ok, worker_state}
 
         {:stop, user_reason} ->
           {:stop, user_reason}
