@@ -15,16 +15,6 @@ defmodule NimblePool do
   @type client_state :: term
   @type user_reason :: term
 
-  @typedoc """
-  A map that holds metadata about the worker containing the following fields:
-
-    * enqueued_at: `System.monotonic_time(:millisecond)`. Updated whenever a worker is checked in
-
-  """
-  @type worker_metadata :: %{
-          enqueued_at: integer()
-        }
-
   @doc """
   Initializes the worker.
 
@@ -183,18 +173,19 @@ defmodule NimblePool do
   @doc """
   Handle pings due to inactivity on worker
 
-  This callback is invoked with `worker_state`, `worker_metadata` and `pool_state`
-  whenever the idle worker periodic timer checks that a worker has been idle on the queue
-  for longer than `:resource_idle_timeout` pool configuration millisecond.
+  Executed whenever the idle worker periodic timer verifies that a worker has been idle
+  on the pool for longer than `:resource idle_timeout` pool configuration milliseconds.
 
-  This callback must return some of the following values:
-    * `{:ok, worker_state}`: Updates worker state and increase metadata's idle hits by 1
+  This callback must return one of the following values:
+    * `{:ok, worker_state}`: Updates worker state.
 
-    * `{:remove, user_reason}`:The pool will proceed to the standard worker termination
-        defined in `terminate_worker/3` with reason `:idle_timenout`
+    * `{:remove, user_reason}`: The pool will proceed to the standard worker termination
+        defined in `terminate_worker/3`.
 
-    * `{:stop, reason}`: The entire pool process will be terminated, and `terminate_worker/3`
+    * `{:stop, user_reason}`: The entire pool process will be terminated, and `terminate_worker/3`
         will be called for every worker on the pool.
+
+    This callback is optional.
   """
   @doc callback: :worker
   @callback handle_ping(
@@ -247,9 +238,9 @@ defmodule NimblePool do
     * `:lazy` - When `true`, workers are started lazily, only when necessary.
       Defaults to `false`.
 
-    * `:resource_idle_timeout` - Time in milliseconds for worker inactivity validation.
-      If not nil, starts a periodic timer on the same frequency that will trigger idle workers validation.
-      Workers that were not checked out for longer than this will call `handle_ping/3`.
+    * `:resource_idle_timeout` - Timeout to tag a worker as idle.
+      If not nil, starts a periodic timer on the same frequency that will ping
+      all idle workers using `handle_ping/2` optional callback .
       Defaults to `nil`
   """
   def start_link(opts) do
