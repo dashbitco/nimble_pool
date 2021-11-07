@@ -871,8 +871,7 @@ defmodule NimblePool do
 
   defp get_metadata() do
     %{
-      enqueued_at: System.monotonic_time(:millisecond),
-      idle_hits: 0
+      enqueued_at: System.monotonic_time(:millisecond)
     }
   end
 end
