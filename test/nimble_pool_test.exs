@@ -1382,10 +1382,10 @@ defmodule NimblePoolTest do
             terminate_worker: fn _reason, _, state -> {:ok, state} end
           ],
           pool_size: 3,
-          resource_idle_timeout: 4
+          resource_idle_timeout: 5
         )
 
-      :timer.sleep(2)
+      :timer.sleep(3)
 
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
                {:result, :client_state_in}
@@ -1417,10 +1417,10 @@ defmodule NimblePoolTest do
             end,
             terminate_worker: fn _reason, _, state -> {:ok, state} end
           ],
-          resource_idle_timeout: 1
+          resource_idle_timeout: 5
         )
 
-      :timer.sleep(2)
+      :timer.sleep(6)
 
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
                {:result, :client_state_in}
@@ -1447,12 +1447,12 @@ defmodule NimblePoolTest do
               {:ok, state}
             end
           ],
-          resource_idle_timeout: 1
+          resource_idle_timeout: 5
         )
 
       Process.monitor(pool)
 
-      :timer.sleep(2)
+      :timer.sleep(6)
 
       assert_received {:terminate, :some_reason}
       refute_received({:DOWN, _, :process, ^pool, {:shutdown, :some_reason}})
@@ -1476,12 +1476,12 @@ defmodule NimblePoolTest do
               {:ok, state}
             end
           ],
-          resource_idle_timeout: 1
+          resource_idle_timeout: 5
         )
 
       Process.monitor(pool)
 
-      :timer.sleep(2)
+      :timer.sleep(6)
 
       assert_received {:terminate, {:shutdown, :some_reason}}
       assert_received {:DOWN, _, :process, ^pool, {:shutdown, :some_reason}}
