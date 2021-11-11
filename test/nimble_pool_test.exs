@@ -1382,7 +1382,7 @@ defmodule NimblePoolTest do
             terminate_worker: fn _reason, _, state -> {:ok, state} end
           ],
           pool_size: 3,
-          resource_idle_timeout: 5
+          worker_idle_timeout: 5
         )
 
       :timer.sleep(3)
@@ -1391,21 +1391,23 @@ defmodule NimblePoolTest do
                {:result, :client_state_in}
              end) == :result
 
-      :timer.sleep(3)
+      assert_receive({:ping, :worker2})
+      assert_receive({:ping, :worker3})
 
       refute_received({:ping, :worker1})
-      assert_received({:ping, :worker2})
-      assert_received({:ping, :worker3})
 
       NimblePool.stop(pool, :shutdown)
     end
 
     test "update worker state if handle_ping return {:ok, new_worker_state}" do
+      parent = self()
+
       {_, pool} =
         stateful_pool!(
           [
             init_worker: fn next -> {:ok, :worker1, next} end,
             handle_ping: fn :worker1, _pool_state ->
+              send(parent, :pong)
               {:ok, :new_worker_state}
             end,
             handle_checkout: fn :checkout, _from, worker_state, pool_state ->
@@ -1417,10 +1419,10 @@ defmodule NimblePoolTest do
             end,
             terminate_worker: fn _reason, _, state -> {:ok, state} end
           ],
-          resource_idle_timeout: 5
+          worker_idle_timeout: 5
         )
 
-      :timer.sleep(6)
+      assert_receive(:pong)
 
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
                {:result, :client_state_in}
@@ -1440,6 +1442,7 @@ defmodule NimblePoolTest do
             end,
             init_worker: fn next -> {:ok, next} end,
             handle_ping: fn _next, _pool_state ->
+              send(parent, :pong)
               {:remove, :some_reason}
             end,
             terminate_worker: fn reason, [], state ->
@@ -1447,12 +1450,12 @@ defmodule NimblePoolTest do
               {:ok, state}
             end
           ],
-          resource_idle_timeout: 5
+          worker_idle_timeout: 5
         )
 
       Process.monitor(pool)
 
-      :timer.sleep(6)
+      assert_receive(:pong)
 
       assert_received {:terminate, :some_reason}
       refute_received({:DOWN, _, :process, ^pool, {:shutdown, :some_reason}})
@@ -1469,6 +1472,7 @@ defmodule NimblePoolTest do
             end,
             init_worker: fn next -> {:ok, next} end,
             handle_ping: fn _next, _pool_state ->
+              send(parent, :pong)
               {:stop, :some_reason}
             end,
             terminate_worker: fn reason, [], state ->
@@ -1476,15 +1480,69 @@ defmodule NimblePoolTest do
               {:ok, state}
             end
           ],
-          resource_idle_timeout: 5
+          worker_idle_timeout: 5
         )
 
       Process.monitor(pool)
 
-      :timer.sleep(6)
+      assert_receive(:pong)
+
+      :timer.sleep(3)
 
       assert_received {:terminate, {:shutdown, :some_reason}}
       assert_received {:DOWN, _, :process, ^pool, {:shutdown, :some_reason}}
+    end
+
+    test "ping workers in order and do not change workers sequence" do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            init_worker: fn next -> {:ok, :worker2, next} end,
+            init_worker: fn next -> {:ok, :worker3, next} end,
+            handle_ping: fn :worker1, _pool_state ->
+              send(parent, {:pong, :worker1})
+              {:ok, :worker1}
+            end,
+            handle_ping: fn :worker2, _pool_state ->
+              send(parent, {:pong, :worker2})
+              {:ok, :worker2}
+            end,
+            handle_ping: fn :worker3, _pool_state ->
+              send(parent, {:pong, :worker3})
+              {:ok, :worker3}
+            end,
+            handle_ping: fn :worker1, _pool_state ->
+              send(parent, {:pong, :worker1})
+              {:ok, :worker1}
+            end,
+            handle_ping: fn :worker2, _pool_state ->
+              send(parent, {:pong, :worker2})
+              {:ok, :worker2}
+            end,
+            handle_ping: fn :worker3, _pool_state ->
+              send(parent, {:pong, :worker3})
+              {:ok, :worker3}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 3,
+          worker_idle_timeout: 5
+        )
+
+      assert_receive({:pong, :worker1})
+      assert_receive({:pong, :worker2})
+      assert_receive({:pong, :worker3})
+
+      assert_receive({:pong, :worker1})
+      assert_receive({:pong, :worker2})
+      assert_receive({:pong, :worker3})
+
+      NimblePool.stop(pool, :shutdown)
     end
   end
 end

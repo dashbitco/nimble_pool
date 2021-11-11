@@ -174,9 +174,10 @@ defmodule NimblePool do
   Handle pings due to inactivity on worker
 
   Executed whenever the idle worker periodic timer verifies that a worker has been idle
-  on the pool for longer than `:resource idle_timeout` pool configuration milliseconds.
+  on the pool for longer than `:worker_idle_timeout` pool configuration milliseconds.
 
   This callback must return one of the following values:
+
     * `{:ok, worker_state}`: Updates worker state.
 
     * `{:remove, user_reason}`: The pool will proceed to the standard worker termination
@@ -199,8 +200,8 @@ defmodule NimblePool do
                       handle_info: 2,
                       handle_enqueue: 2,
                       handle_update: 3,
-                      terminate_worker: 3,
-                      handle_ping: 2
+                      handle_ping: 2,
+                      terminate_worker: 3
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -238,7 +239,7 @@ defmodule NimblePool do
     * `:lazy` - When `true`, workers are started lazily, only when necessary.
       Defaults to `false`.
 
-    * `:resource_idle_timeout` - Timeout to tag a worker as idle.
+    * `:worker_idle_timeout` - Timeout to tag a worker as idle.
       If not nil, starts a periodic timer on the same frequency that will ping
       all idle workers using `handle_ping/2` optional callback .
       Defaults to `nil`
@@ -247,7 +248,7 @@ defmodule NimblePool do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
     {lazy, opts} = Keyword.pop(opts, :lazy, false)
-    {resource_idle_timeout, opts} = Keyword.pop(opts, :resource_idle_timeout, nil)
+    {worker_idle_timeout, opts} = Keyword.pop(opts, :worker_idle_timeout, nil)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -257,7 +258,7 @@ defmodule NimblePool do
       raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
     end
 
-    GenServer.start_link(__MODULE__, {worker, arg, pool_size, lazy, resource_idle_timeout}, opts)
+    GenServer.start_link(__MODULE__, {worker, arg, pool_size, lazy, worker_idle_timeout}, opts)
   end
 
   @doc """
@@ -360,13 +361,19 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size, lazy, resource_idle_timeout}) do
+  def init({worker, arg, pool_size, lazy, worker_idle_timeout}) do
     Process.flag(:trap_exit, true)
     _ = Code.ensure_loaded(worker)
     lazy = if lazy, do: pool_size, else: nil
 
-    if resource_idle_timeout do
-      :timer.send_interval(resource_idle_timeout, :check_idle)
+    if worker_idle_timeout do
+      if function_exported?(worker, :handle_ping, 2) do
+        Process.send_after(self(), :check_idle, worker_idle_timeout)
+      else
+        IO.warn(
+          "worker_idle_timeout is not nil but handle_ping/2 callback is not exported by the worker."
+        )
+      end
     end
 
     with {:ok, pool_state} <- do_init_pool(worker, arg) do
@@ -389,7 +396,7 @@ defmodule NimblePool do
         async: async,
         state: pool_state,
         lazy: lazy,
-        resource_idle_timeout: resource_idle_timeout
+        worker_idle_timeout: worker_idle_timeout
       }
 
       {:ok, state}
@@ -518,12 +525,13 @@ defmodule NimblePool do
   end
 
   @impl true
-  def handle_info(:check_idle, %{resources: resources} = state) do
-    now_in_ms = System.monotonic_time(:millisecond)
-    resources_list = :queue.to_list(resources)
-
-    case check_idle_resources(resources_list, now_in_ms, state) do
+  def handle_info(
+        :check_idle,
+        %{resources: resources, worker_idle_timeout: worker_idle_timeout} = state
+      ) do
+    case check_idle_resources(resources, state) do
       {:ok, new_resources, new_state} ->
+        Process.send_after(self(), :check_idle, worker_idle_timeout)
         {:noreply, %{new_state | resources: new_resources}}
 
       {:stop, reason, state} ->
@@ -696,36 +704,39 @@ defmodule NimblePool do
     end
   end
 
-  defp check_idle_resources(resources_list, now_in_ms, state) do
-    do_check_idle_resources(resources_list, now_in_ms, state, [])
+  defp check_idle_resources(resources, state) do
+    now_in_ms = System.monotonic_time(:millisecond)
+    do_check_idle_resources(resources, now_in_ms, state, :queue.new())
   end
 
-  defp do_check_idle_resources([], _now_in_ms, state, new_resources_list) do
-    {:ok, :queue.from_list(new_resources_list), state}
-  end
+  defp do_check_idle_resources(resources, now_in_ms, state, new_resources) do
+    case :queue.out(resources) do
+      {:empty, _} ->
+        {:ok, new_resources, state}
 
-  defp do_check_idle_resources([h | t] = resources_list, now_in_ms, state, new_resources_list) do
-    {worker_server_state, worker_metadata} = h
-    time_diff = abs(worker_metadata.enqueued_at - now_in_ms)
+      {{:value, resource_data}, resources} ->
+        {worker_server_state, worker_metadata} = resource_data
+        time_diff = abs(worker_metadata - now_in_ms)
 
-    if time_diff >= state.resource_idle_timeout do
-      case maybe_ping_worker(worker_server_state, state) do
-        {:ok, new_worker_state} ->
-          new_resource = {new_worker_state, worker_metadata}
-          new_resources_list = new_resources_list ++ [new_resource]
-          do_check_idle_resources(t, now_in_ms, state, new_resources_list)
+        if time_diff >= state.worker_idle_timeout do
+          case maybe_ping_worker(worker_server_state, state) do
+            {:ok, new_worker_state} ->
+              new_resource_data = {new_worker_state, worker_metadata}
+              new_resources = :queue.in(new_resource_data, new_resources)
+              do_check_idle_resources(resources, now_in_ms, state, new_resources)
 
-        {:remove, new_state} ->
-          do_check_idle_resources(t, now_in_ms, new_state, new_resources_list)
+            {:remove, new_state} ->
+              do_check_idle_resources(resources, now_in_ms, new_state, new_resources)
 
-        {:stop, reason} ->
-          {:stop, reason, state}
+            {:stop, reason} ->
+              {:stop, reason, state}
 
-        new_state ->
-          {:ok, :queue.from_list(new_resources_list ++ resources_list), new_state}
-      end
-    else
-      {:ok, :queue.from_list(new_resources_list ++ resources_list), state}
+            new_state ->
+              {:ok, :queue.join(new_resources, resources), new_state}
+          end
+        else
+          {:ok, :queue.join(new_resources, resources), state}
+        end
     end
   end
 
@@ -870,8 +881,6 @@ defmodule NimblePool do
   end
 
   defp get_metadata() do
-    %{
-      enqueued_at: System.monotonic_time(:millisecond)
-    }
+    System.monotonic_time(:millisecond)
   end
 end
