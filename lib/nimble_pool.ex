@@ -187,6 +187,18 @@ defmodule NimblePool do
         will be called for every worker on the pool.
 
     This callback is optional.
+
+  ## Disclaimers:
+
+  * On lazy pools, if no worker is currently on the pool the callback will never be called.
+  Therefore you can not rely on this callback to terminate empty lazy pools.
+
+  * On not lazy pools, if you return `{:remove, user_reason}` you may end up
+  terminating and initializing workers at the same time every idle verification cycle.
+
+  * On large pools, if many resources goes idle at the same cycle you may end up terminating a large
+  number of workers sequencially, what could lead to the pool being unable to fulfill requests.
+
   """
   @doc callback: :worker
   @callback handle_ping(
