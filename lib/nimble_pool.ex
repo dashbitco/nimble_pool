@@ -190,14 +190,14 @@ defmodule NimblePool do
 
   ## Disclaimers:
 
-  * On lazy pools, if no worker is currently on the pool the callback will never be called.
-  Therefore you can not rely on this callback to terminate empty lazy pools.
+    * On lazy pools, if no worker is currently on the pool the callback will never be called.
+    Therefore you can not rely on this callback to terminate empty lazy pools.
 
-  * On not lazy pools, if you return `{:remove, user_reason}` you may end up
-  terminating and initializing workers at the same time every idle verification cycle.
+    * On not lazy pools, if you return `{:remove, user_reason}` you may end up
+    terminating and initializing workers at the same time every idle verification cycle.
 
-  * On large pools, if many resources goes idle at the same cycle you may end up terminating a large
-  number of workers sequencially, what could lead to the pool being unable to fulfill requests.
+    * On large pools, if many resources goes idle at the same cycle you may end up terminating a large
+    number of workers sequencially, what could lead to the pool being unable to fulfill requests.
 
   """
   @doc callback: :worker
@@ -205,7 +205,7 @@ defmodule NimblePool do
               worker_state,
               pool_state
             ) ::
-              {:ok, worker_state} | {:remove, user_reason} | {:stop, user_reason()}
+              {:ok, worker_state} | {:remove, user_reason()} | {:stop, user_reason()}
 
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
