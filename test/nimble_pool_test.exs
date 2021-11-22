@@ -1544,5 +1544,38 @@ defmodule NimblePoolTest do
 
       NimblePool.stop(pool, :shutdown)
     end
+
+    test "ping only max_idle_pings workers each verification cycle " do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            init_worker: fn next -> {:ok, :worker2, next} end,
+            init_worker: fn next -> {:ok, :worker3, next} end,
+            handle_ping: fn worker, _pool_state ->
+              send(parent, {:pong, worker})
+              {:ok, worker}
+            end,
+            handle_ping: fn worker, _pool_state ->
+              send(parent, {:pong, worker})
+              {:ok, worker}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 3,
+          worker_idle_timeout: 5,
+          max_idle_pings: 2
+        )
+
+      assert_receive({:pong, :worker1})
+      assert_receive({:pong, :worker2})
+      refute_received({:pong, :worker3})
+
+      NimblePool.stop(pool, :shutdown)
+    end
   end
 end
