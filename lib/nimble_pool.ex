@@ -171,7 +171,7 @@ defmodule NimblePool do
               {:ok, pool_state}
 
   @doc """
-  Handle pings due to inactivity on worker
+  Handle pings due to inactivity on worker.
 
   Executed whenever the idle worker periodic timer verifies that a worker has been idle
   on the pool for longer than `:worker_idle_timeout` pool configuration milliseconds.
@@ -186,7 +186,7 @@ defmodule NimblePool do
     * `{:stop, user_reason}`: The entire pool process will be terminated, and `terminate_worker/3`
         will be called for every worker on the pool.
 
-    This callback is optional.
+  This callback is optional.
 
   ## Max idle pings
 
@@ -194,26 +194,23 @@ defmodule NimblePool do
   of workers. But it is important to keep in mind the following behaviours whenever utilizing it.
 
     * If you are not terminating workers with `handle_ping/2`, you may end up pinging only the same
-    workers over and over again because each cycle will ping only the first `:max_idle_pings` workers
+      workers over and over again because each cycle will ping only the first `:max_idle_pings` workers
 
     * If you are terminating workers with `handle_ping/2`, the last worker may be terminated after up to
-    `worker_idle_timeout + worker_idle_timeout * ceil(number_of_workers/max_idle_pings)`
-     instead of `2 * worker_idle_timeout - 1` milliseconds of idle time.
+      `worker_idle_timeout + worker_idle_timeout * ceil(number_of_workers/max_idle_pings)`
+       instead of `2 * worker_idle_timeout - 1` milliseconds of idle time.
 
   ## Disclaimers
 
     * On lazy pools, if no worker is currently on the pool the callback will never be called.
-    Therefore you can not rely on this callback to terminate empty lazy pools.
+      Therefore you can not rely on this callback to terminate empty lazy pools.
 
     * On not lazy pools, if you return `{:remove, user_reason}` you may end up
-    terminating and initializing workers at the same time every idle verification cycle.
+      terminating and initializing workers at the same time every idle verification cycle.
 
     * On large pools, if many resources goes idle at the same cycle you may end up terminating
-    a large number of workers sequencially, what could lead to the pool being unable to
-    fulfill requests. See `:max_idle_pings` option to prevent this.
-
-
-
+      a large number of workers sequentially, what could lead to the pool being unable to
+      fulfill requests. See `:max_idle_pings` option to prevent this.
 
   """
   @doc callback: :worker
@@ -273,8 +270,8 @@ defmodule NimblePool do
       Defaults to `nil`
 
     * `:max_idle_pings` - Defines a limit to the number of workers that can be pinged
-    for each cycle of the `handle_ping/2` optional callback.
-    Defaults to `nil`, which is no limit. See `handle_ping/2` for more details.
+      for each cycle of the `handle_ping/2` optional callback.
+      Defaults to `nil`, which is no limit. See `handle_ping/2` for more details.
   """
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
@@ -408,7 +405,7 @@ defmodule NimblePool do
         Process.send_after(self(), :check_idle, worker_idle_timeout)
       else
         IO.warn(
-          "worker_idle_timeout is not nil but handle_ping/2 callback is not exported by the worker."
+          ":worker_idle_timeout was given but the worker does not export a handle_ping/2 callback"
         )
       end
     end
