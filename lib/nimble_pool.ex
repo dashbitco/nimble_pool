@@ -780,7 +780,9 @@ defmodule NimblePool do
                 remaining_pings - 1
               )
 
-            {:remove, new_state} ->
+            {:remove, user_reason} ->
+              new_state = remove_worker(user_reason, worker_server_state, state)
+
               do_check_idle_resources(
                 resources,
                 now_in_ms,
@@ -791,9 +793,6 @@ defmodule NimblePool do
 
             {:stop, reason} ->
               {:stop, reason, state}
-
-            new_state ->
-              {:ok, :queue.join(new_resources, resources), new_state}
           end
         else
           {:ok, :queue.join(new_resources, resources), state}
@@ -804,35 +803,30 @@ defmodule NimblePool do
   defp maybe_ping_worker(worker_server_state, state) do
     %{worker: worker, state: pool_state} = state
 
-    if function_exported?(worker, :handle_ping, 2) do
-      args = [worker_server_state, pool_state]
+    args = [worker_server_state, pool_state]
 
-      case apply_worker_callback(worker, :handle_ping, args) do
-        {:ok, worker_state} ->
-          {:ok, worker_state}
+    case apply_worker_callback(worker, :handle_ping, args) do
+      {:ok, worker_state} ->
+        {:ok, worker_state}
 
-        {:remove, user_reason} ->
-          new_state = remove_worker(user_reason, worker_server_state, state)
-          {:remove, new_state}
+      {:remove, user_reason} ->
+        {:remove, user_reason}
 
-        {:stop, user_reason} ->
-          {:stop, user_reason}
+      {:stop, user_reason} ->
+        {:stop, user_reason}
 
-        other ->
-          raise """
-          unexpected return from #{inspect(worker)}.handle_ping/3.
+      other ->
+        raise """
+        unexpected return from #{inspect(worker)}.handle_ping/2.
 
-          Expected:
+        Expected:
 
-            {:remove, reason}
-            | {:ok, worker_state}
-            | {:stop, reason}
+          {:remove, reason}
+          | {:ok, worker_state}
+          | {:stop, reason}
 
-          Got: #{inspect(other)}
-          """
-      end
-    else
-      state
+        Got: #{inspect(other)}
+        """
     end
   end
 
