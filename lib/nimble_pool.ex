@@ -278,7 +278,7 @@ defmodule NimblePool do
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
     {lazy, opts} = Keyword.pop(opts, :lazy, false)
     {worker_idle_timeout, opts} = Keyword.pop(opts, :worker_idle_timeout, nil)
-    {max_idle_pings, opts} = Keyword.pop(opts, :max_idle_pings, nil)
+    {max_idle_pings, opts} = Keyword.pop(opts, :max_idle_pings, -1)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -741,19 +741,23 @@ defmodule NimblePool do
 
   defp check_idle_resources(resources, state) do
     now_in_ms = System.monotonic_time(:millisecond)
-    do_check_idle_resources(resources, now_in_ms, state, :queue.new(), 0)
+    do_check_idle_resources(resources, now_in_ms, state, :queue.new(), state.max_idle_pings)
   end
 
-  defp do_check_idle_resources(resources, now_in_ms, state, new_resources, pinged_workers) do
+  defp do_check_idle_resources(resources, _now_in_ms, state, new_resources, 0) do
+    {:ok, :queue.join(new_resources, resources), state}
+  end
+
+  defp do_check_idle_resources(resources, now_in_ms, state, new_resources, remaining_pings) do
     case :queue.out(resources) do
       {:empty, _} ->
         {:ok, new_resources, state}
 
       {{:value, resource_data}, resources} ->
         {worker_server_state, worker_metadata} = resource_data
-        time_diff = abs(worker_metadata - now_in_ms)
+        time_diff = now_in_ms - worker_metadata
 
-        if time_diff >= state.worker_idle_timeout && pinged_workers < state.max_idle_pings do
+        if time_diff >= state.worker_idle_timeout do
           case maybe_ping_worker(worker_server_state, state) do
             {:ok, new_worker_state} ->
               new_resource_data = {new_worker_state, worker_metadata}
@@ -764,7 +768,7 @@ defmodule NimblePool do
                 now_in_ms,
                 state,
                 new_resources,
-                pinged_workers + 1
+                remaining_pings - 1
               )
 
             {:remove, new_state} ->
@@ -773,7 +777,7 @@ defmodule NimblePool do
                 now_in_ms,
                 new_state,
                 new_resources,
-                pinged_workers + 1
+                remaining_pings - 1
               )
 
             {:stop, reason} ->
