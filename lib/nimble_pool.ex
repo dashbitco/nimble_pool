@@ -273,14 +273,14 @@ defmodule NimblePool do
     * `:lazy` - When `true`, workers are started lazily, only when necessary.
       Defaults to `false`.
 
-    * `:worker_idle_timeout` - Timeout to tag a worker as idle.
+    * `:worker_idle_timeout` - Timeout in milliseconds to tag a worker as idle.
       If not nil, starts a periodic timer on the same frequency that will ping
       all idle workers using `handle_ping/2` optional callback .
       Defaults to `nil`
 
     * `:max_idle_pings` - Defines a limit to the number of workers that can be pinged
       for each cycle of the `handle_ping/2` optional callback.
-      Defaults to `nil`, which is no limit. See `handle_ping/2` for more details.
+      Defaults to -1, which means limit. See `handle_ping/2` for more details.
   """
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
