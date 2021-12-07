@@ -170,11 +170,71 @@ defmodule NimblePool do
             ) ::
               {:ok, pool_state}
 
+  @doc """
+  Handle pings due to inactivity on worker.
+
+  Executed whenever the idle worker periodic timer verifies that a worker has been idle
+  on the pool for longer than `:worker_idle_timeout` pool configuration milliseconds.
+
+  This callback must return one of the following values:
+
+    * `{:ok, worker_state}`: Updates worker state.
+
+    * `{:remove, user_reason}`: The pool will proceed to the standard worker termination
+        defined in `terminate_worker/3`.
+
+    * `{:stop, user_reason}`: The entire pool process will be terminated, and `terminate_worker/3`
+        will be called for every worker on the pool.
+
+  This callback is optional.
+
+  ## Max idle pings
+
+  The `:max_idle_pings` pool option is useful to prevent sequencial termination of a large number
+  of workers. But it is important to keep in mind the following behaviours whenever utilizing it.
+
+    * If you are not terminating workers with `handle_ping/2`, you may end up pinging only the same
+      workers over and over again because each cycle will ping only the first `:max_idle_pings` workers
+
+    * If you are terminating workers with `handle_ping/2`, the last worker may be terminated after up to
+      `worker_idle_timeout + worker_idle_timeout * ceil(number_of_workers/max_idle_pings)`
+       instead of `2 * worker_idle_timeout` milliseconds of idle time.
+
+      For instance if you have a pool with 10 workers and a ping of 1 second and:
+
+      Considering a negligible worker termination time and a worst case scenario where all the workers
+      goes idle right after an verification cycle is started.
+
+      Without `max_idle_ping` the last work will be terminated in the next cycle, 2 seconds.
+
+      With a `max_idle_ping` of 2, the last worker will be terminated only in the 5th cycle, 6 seconds.
+
+  ## Disclaimers
+
+    * On lazy pools, if no worker is currently on the pool the callback will never be called.
+      Therefore you can not rely on this callback to terminate empty lazy pools.
+
+    * On not lazy pools, if you return `{:remove, user_reason}` you may end up
+      terminating and initializing workers at the same time every idle verification cycle.
+
+    * On large pools, if many resources goes idle at the same cycle you may end up terminating
+      a large number of workers sequentially, what could lead to the pool being unable to
+      fulfill requests. See `:max_idle_pings` option to prevent this.
+
+  """
+  @doc callback: :worker
+  @callback handle_ping(
+              worker_state,
+              pool_state
+            ) ::
+              {:ok, worker_state} | {:remove, user_reason()} | {:stop, user_reason()}
+
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
                       handle_info: 2,
                       handle_enqueue: 2,
                       handle_update: 3,
+                      handle_ping: 2,
                       terminate_worker: 3
 
   @doc """
@@ -213,11 +273,22 @@ defmodule NimblePool do
     * `:lazy` - When `true`, workers are started lazily, only when necessary.
       Defaults to `false`.
 
+    * `:worker_idle_timeout` - Timeout in milliseconds to tag a worker as idle.
+      If not nil, starts a periodic timer on the same frequency that will ping
+      all idle workers using `handle_ping/2` optional callback .
+      Defaults to no timeout.
+
+    * `:max_idle_pings` - Defines a limit to the number of workers that can be pinged
+      for each cycle of the `handle_ping/2` optional callback.
+      Defaults to no limit. See `handle_ping/2` for more details.
+
   """
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
     {lazy, opts} = Keyword.pop(opts, :lazy, false)
+    {worker_idle_timeout, opts} = Keyword.pop(opts, :worker_idle_timeout, nil)
+    {max_idle_pings, opts} = Keyword.pop(opts, :max_idle_pings, -1)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -227,7 +298,11 @@ defmodule NimblePool do
       raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
     end
 
-    GenServer.start_link(__MODULE__, {worker, arg, pool_size, lazy}, opts)
+    GenServer.start_link(
+      __MODULE__,
+      {worker, arg, pool_size, lazy, worker_idle_timeout, max_idle_pings},
+      opts
+    )
   end
 
   @doc """
@@ -330,10 +405,20 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size, lazy}) do
+  def init({worker, arg, pool_size, lazy, worker_idle_timeout, max_idle_pings}) do
     Process.flag(:trap_exit, true)
     _ = Code.ensure_loaded(worker)
     lazy = if lazy, do: pool_size, else: nil
+
+    if worker_idle_timeout do
+      if function_exported?(worker, :handle_ping, 2) do
+        Process.send_after(self(), :check_idle, worker_idle_timeout)
+      else
+        IO.warn(
+          ":worker_idle_timeout was given but the worker does not export a handle_ping/2 callback"
+        )
+      end
+    end
 
     with {:ok, pool_state} <- do_init_pool(worker, arg) do
       {pool_state, resources, async} =
@@ -354,7 +439,9 @@ defmodule NimblePool do
         resources: resources,
         async: async,
         state: pool_state,
-        lazy: lazy
+        lazy: lazy,
+        worker_idle_timeout: worker_idle_timeout,
+        max_idle_pings: max_idle_pings
       }
 
       {:ok, state}
@@ -411,7 +498,8 @@ defmodule NimblePool do
         {resources, state} =
           case checkin do
             {:ok, worker_server_state, pool_state} ->
-              {:queue.in(worker_server_state, resources), %{state | state: pool_state}}
+              {:queue.in({worker_server_state, get_metadata()}, resources),
+               %{state | state: pool_state}}
 
             {:remove, reason, pool_state} ->
               {resources,
@@ -471,7 +559,7 @@ defmodule NimblePool do
     case async do
       %{^ref => _} ->
         Process.demonitor(ref, [:flush])
-        resources = :queue.in(worker_state, resources)
+        resources = :queue.in({worker_state, get_metadata()}, resources)
         async = Map.delete(async, ref)
         state = %{state | async: async, resources: resources}
         {:noreply, maybe_checkout(state)}
@@ -482,13 +570,28 @@ defmodule NimblePool do
   end
 
   @impl true
+  def handle_info(
+        :check_idle,
+        %{resources: resources, worker_idle_timeout: worker_idle_timeout} = state
+      ) do
+    case check_idle_resources(resources, state) do
+      {:ok, new_resources, new_state} ->
+        Process.send_after(self(), :check_idle, worker_idle_timeout)
+        {:noreply, %{new_state | resources: new_resources}}
+
+      {:stop, reason, state} ->
+        {:stop, {:shutdown, reason}, state}
+    end
+  end
+
+  @impl true
   def handle_info(msg, state) do
     maybe_handle_info(msg, state)
   end
 
   @impl true
   def terminate(reason, %{resources: resources} = state) do
-    for worker_server_state <- :queue.to_list(resources) do
+    for {worker_server_state, _} <- :queue.to_list(resources) do
       maybe_terminate_worker(reason, worker_server_state, state)
     end
 
@@ -537,10 +640,10 @@ defmodule NimblePool do
     if function_exported?(worker, :handle_info, 2) do
       {resources, state} =
         Enum.reduce(:queue.to_list(resources), {:queue.new(), state}, fn
-          worker_server_state, {resources, state} ->
+          {worker_server_state, _}, {resources, state} ->
             case apply_worker_callback(worker, :handle_info, [msg, worker_server_state]) do
               {:ok, worker_server_state} ->
-                {:queue.in(worker_server_state, resources), state}
+                {:queue.in({worker_server_state, get_metadata()}, resources), state}
 
               {:remove, reason} ->
                 {resources, remove_worker(reason, worker_server_state, state)}
@@ -584,7 +687,7 @@ defmodule NimblePool do
         state = init_worker_if_lazy_and_empty(state)
 
       case :queue.out(resources) do
-        {{:value, worker_server_state}, resources} ->
+        {{:value, {worker_server_state, _}}, resources} ->
           args = [command, from, worker_server_state, pool_state]
 
           case apply_worker_callback(pool_state, worker, :handle_checkout, args) do
@@ -646,6 +749,88 @@ defmodule NimblePool do
     end
   end
 
+  defp check_idle_resources(resources, state) do
+    now_in_ms = System.monotonic_time(:millisecond)
+    do_check_idle_resources(resources, now_in_ms, state, :queue.new(), state.max_idle_pings)
+  end
+
+  defp do_check_idle_resources(resources, _now_in_ms, state, new_resources, 0) do
+    {:ok, :queue.join(new_resources, resources), state}
+  end
+
+  defp do_check_idle_resources(resources, now_in_ms, state, new_resources, remaining_pings) do
+    case :queue.out(resources) do
+      {:empty, _} ->
+        {:ok, new_resources, state}
+
+      {{:value, resource_data}, resources} ->
+        {worker_server_state, worker_metadata} = resource_data
+        time_diff = now_in_ms - worker_metadata
+
+        if time_diff >= state.worker_idle_timeout do
+          case maybe_ping_worker(worker_server_state, state) do
+            {:ok, new_worker_state} ->
+              new_resource_data = {new_worker_state, worker_metadata}
+              new_resources = :queue.in(new_resource_data, new_resources)
+
+              do_check_idle_resources(
+                resources,
+                now_in_ms,
+                state,
+                new_resources,
+                remaining_pings - 1
+              )
+
+            {:remove, user_reason} ->
+              new_state = remove_worker(user_reason, worker_server_state, state)
+
+              do_check_idle_resources(
+                resources,
+                now_in_ms,
+                new_state,
+                new_resources,
+                remaining_pings - 1
+              )
+
+            {:stop, reason} ->
+              {:stop, reason, state}
+          end
+        else
+          {:ok, :queue.join(new_resources, resources), state}
+        end
+    end
+  end
+
+  defp maybe_ping_worker(worker_server_state, state) do
+    %{worker: worker, state: pool_state} = state
+
+    args = [worker_server_state, pool_state]
+
+    case apply_worker_callback(worker, :handle_ping, args) do
+      {:ok, worker_state} ->
+        {:ok, worker_state}
+
+      {:remove, user_reason} ->
+        {:remove, user_reason}
+
+      {:stop, user_reason} ->
+        {:stop, user_reason}
+
+      other ->
+        raise """
+        unexpected return from #{inspect(worker)}.handle_ping/2.
+
+        Expected:
+
+          {:remove, reason}
+          | {:ok, worker_state}
+          | {:stop, reason}
+
+        Got: #{inspect(other)}
+        """
+    end
+  end
+
   defp maybe_terminate_worker(reason, worker_server_state, state) do
     %{worker: worker, state: pool_state} = state
 
@@ -678,7 +863,7 @@ defmodule NimblePool do
   defp init_worker(worker, pool_state, resources, async) do
     case apply_worker_callback(worker, :init_worker, [pool_state]) do
       {:ok, worker_state, pool_state} ->
-        {pool_state, :queue.in(worker_state, resources), async}
+        {pool_state, :queue.in({worker_state, get_metadata()}, resources), async}
 
       {:async, fun, pool_state} when is_function(fun, 0) ->
         %{ref: ref, pid: pid} = Task.Supervisor.async(NimblePool.TaskSupervisor, fun)
@@ -749,5 +934,9 @@ defmodule NimblePool do
     else
       {:ok, command, pool_state}
     end
+  end
+
+  defp get_metadata() do
+    System.monotonic_time(:millisecond)
   end
 end
