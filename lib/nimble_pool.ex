@@ -19,7 +19,7 @@ defmodule NimblePool do
   Initializes the worker.
 
   It receives the worker argument passed to `start_link/1`. It must
-  return `{:ok, worker_state}` or `{:async, fun}`, where the `fun`
+  return `{:ok, worker_state, pool_state}` or `{:async, fun}`, where the `fun`
   is a zero-arity function that must return the worker state.
 
   Note this callback is synchronous and therefore will block the pool.
@@ -319,10 +319,10 @@ defmodule NimblePool do
   callback. The `c:handle_checkout/4` callback will return a client state,
   which is given to the `function`.
 
-  The `function` receives two arguments, the pool reference and must return
-  a two-element tuple, where the first element is the function return value,
-  and the second element is the updated `client_state`, which will be given
-  as the first argument to `c:handle_checkin/4`.
+  The `function` receives two arguments, the pool `{pid(), reference()}` and the `client_state`.
+  The function must return a two-element tuple, where the first element is the
+  function return value, and the second element is the updated `client_state`,
+  which will be given as the first argument to `c:handle_checkin/4`.
 
   `checkout!` also has an optional `timeout` value, this value will be applied
   to checkout operation itself. `checkin` happens asynchronously.
