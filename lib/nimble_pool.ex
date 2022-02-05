@@ -321,7 +321,7 @@ defmodule NimblePool do
 
   The `function` receives two arguments, the pool `{pid(), reference()}` and the `client_state`.
   The function must return a two-element tuple, where the first element is the
-  function return value, and the second element is the updated `client_state`,
+  return value for `checkout!`, and the second element is the updated `client_state`,
   which will be given as the first argument to `c:handle_checkin/4`.
 
   `checkout!` also has an optional `timeout` value, this value will be applied
