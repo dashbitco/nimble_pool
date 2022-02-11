@@ -425,7 +425,7 @@ defmodule NimblePool do
         if is_nil(lazy) do
           Enum.reduce(1..pool_size, {pool_state, :queue.new(), %{}}, fn
             _, {pool_state, resources, async} ->
-              init_worker(worker, pool_state, resources, async)
+              init_worker(worker, pool_state, resources, async, worker_idle_timeout)
           end)
         else
           {pool_state, :queue.new(), %{}}
@@ -483,7 +483,13 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, :checkin, ref, worker_client_state}, state) do
-    %{requests: requests, resources: resources, worker: worker, state: pool_state} = state
+    %{
+      requests: requests,
+      resources: resources,
+      worker: worker,
+      state: pool_state,
+      worker_idle_timeout: worker_idle_timeout
+    } = state
 
     case requests do
       %{^ref => {pid, mon_ref, :state, worker_server_state}} ->
@@ -498,7 +504,7 @@ defmodule NimblePool do
         {resources, state} =
           case checkin do
             {:ok, worker_server_state, pool_state} ->
-              {:queue.in({worker_server_state, get_metadata()}, resources),
+              {:queue.in({worker_server_state, get_metadata(worker_idle_timeout)}, resources),
                %{state | state: pool_state}}
 
             {:remove, reason, pool_state} ->
@@ -521,8 +527,17 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({__MODULE__, :init_worker}, state) do
-    %{async: async, resources: resources, worker: worker, state: pool_state} = state
-    {pool_state, resources, async} = init_worker(worker, pool_state, resources, async)
+    %{
+      async: async,
+      resources: resources,
+      worker: worker,
+      state: pool_state,
+      worker_idle_timeout: worker_idle_timeout
+    } = state
+
+    {pool_state, resources, async} =
+      init_worker(worker, pool_state, resources, async, worker_idle_timeout)
+
     {:noreply, maybe_checkout(%{state | async: async, resources: resources, state: pool_state})}
   end
 
@@ -554,12 +569,12 @@ defmodule NimblePool do
 
   @impl true
   def handle_info({ref, worker_state} = reply, state) when is_reference(ref) do
-    %{async: async, resources: resources} = state
+    %{async: async, resources: resources, worker_idle_timeout: worker_idle_timeout} = state
 
     case async do
       %{^ref => _} ->
         Process.demonitor(ref, [:flush])
-        resources = :queue.in({worker_state, get_metadata()}, resources)
+        resources = :queue.in({worker_state, get_metadata(worker_idle_timeout)}, resources)
         async = Map.delete(async, ref)
         state = %{state | async: async, resources: resources}
         {:noreply, maybe_checkout(state)}
@@ -607,13 +622,19 @@ defmodule NimblePool do
   end
 
   defp remove_async_ref(ref, state) do
-    %{async: async, resources: resources, worker: worker, state: pool_state} = state
+    %{
+      async: async,
+      resources: resources,
+      worker: worker,
+      state: pool_state,
+      worker_idle_timeout: worker_idle_timeout
+    } = state
 
     # If an async worker failed to start, we try to start another one
     # immediately, even if the pool is lazy, as we assume there is an
     # immediate need for this resource.
     {pool_state, resources, async} =
-      init_worker(worker, pool_state, resources, Map.delete(async, ref))
+      init_worker(worker, pool_state, resources, Map.delete(async, ref), worker_idle_timeout)
 
     {:noreply, %{state | resources: resources, async: async, state: pool_state}}
   end
@@ -635,7 +656,7 @@ defmodule NimblePool do
   end
 
   defp maybe_handle_info(msg, state) do
-    %{resources: resources, worker: worker} = state
+    %{resources: resources, worker: worker, worker_idle_timeout: worker_idle_timeout} = state
 
     if function_exported?(worker, :handle_info, 2) do
       {resources, state} =
@@ -643,7 +664,8 @@ defmodule NimblePool do
           {worker_server_state, _}, {resources, state} ->
             case apply_worker_callback(worker, :handle_info, [msg, worker_server_state]) do
               {:ok, worker_server_state} ->
-                {:queue.in({worker_server_state, get_metadata()}, resources), state}
+                {:queue.in({worker_server_state, get_metadata(worker_idle_timeout)}, resources),
+                 state}
 
               {:remove, reason} ->
                 {resources, remove_worker(reason, worker_server_state, state)}
@@ -722,10 +744,15 @@ defmodule NimblePool do
 
   defp init_worker_if_lazy_and_empty(%{lazy: nil} = state), do: state
 
-  defp init_worker_if_lazy_and_empty(%{lazy: lazy, resources: resources} = state) do
+  defp init_worker_if_lazy_and_empty(
+         %{lazy: lazy, resources: resources, worker_idle_timeout: worker_idle_timeout} = state
+       ) do
     if lazy > 0 and :queue.is_empty(resources) do
       %{async: async, worker: worker, state: pool_state} = state
-      {pool_state, resources, async} = init_worker(worker, pool_state, resources, async)
+
+      {pool_state, resources, async} =
+        init_worker(worker, pool_state, resources, async, worker_idle_timeout)
+
       %{state | async: async, resources: resources, state: pool_state, lazy: lazy - 1}
     else
       state
@@ -860,10 +887,11 @@ defmodule NimblePool do
     end
   end
 
-  defp init_worker(worker, pool_state, resources, async) do
+  defp init_worker(worker, pool_state, resources, async, worker_idle_timeout) do
     case apply_worker_callback(worker, :init_worker, [pool_state]) do
       {:ok, worker_state, pool_state} ->
-        {pool_state, :queue.in({worker_state, get_metadata()}, resources), async}
+        {pool_state, :queue.in({worker_state, get_metadata(worker_idle_timeout)}, resources),
+         async}
 
       {:async, fun, pool_state} when is_function(fun, 0) ->
         %{ref: ref, pid: pid} = Task.Supervisor.async(NimblePool.TaskSupervisor, fun)
@@ -936,7 +964,6 @@ defmodule NimblePool do
     end
   end
 
-  defp get_metadata() do
-    System.monotonic_time(:millisecond)
-  end
+  defp get_metadata(nil), do: nil
+  defp get_metadata(_worker_idle_timeout), do: System.monotonic_time(:millisecond)
 end
