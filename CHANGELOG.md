@@ -1,6 +1,11 @@
 # Changelog
 
-## v0.2.4 (2020-02-16)
+## v0.2.5 (2022-02-12)
+
+* Add `handle_ping` to manage idle resources
+* Only compute `monotonic_time` if `worker_idle_timeout` is provided
+
+## v0.2.4 (2021-02-16)
 
 * Fix a bug with lazy pool starting more connections than specified
 
