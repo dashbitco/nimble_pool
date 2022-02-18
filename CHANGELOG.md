@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.6 (2022-02-18)
+
+* Fix a bug on idle timeout causing the pool to empty
+
 ## v0.2.5 (2022-02-12)
 
 * Add `handle_ping` to manage idle resources
