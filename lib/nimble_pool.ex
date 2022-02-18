@@ -790,7 +790,7 @@ defmodule NimblePool do
       {:empty, _} ->
         {:ok, new_resources, state}
 
-      {{:value, resource_data}, resources} ->
+      {{:value, resource_data}, next_resources} ->
         {worker_server_state, worker_metadata} = resource_data
         time_diff = now_in_ms - worker_metadata
 
@@ -801,7 +801,7 @@ defmodule NimblePool do
               new_resources = :queue.in(new_resource_data, new_resources)
 
               do_check_idle_resources(
-                resources,
+                next_resources,
                 now_in_ms,
                 state,
                 new_resources,
@@ -812,7 +812,7 @@ defmodule NimblePool do
               new_state = remove_worker(user_reason, worker_server_state, state)
 
               do_check_idle_resources(
-                resources,
+                next_resources,
                 now_in_ms,
                 new_state,
                 new_resources,
