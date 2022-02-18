@@ -1604,18 +1604,15 @@ defmodule NimblePoolTest do
 
       Process.monitor(pool)
 
-      :timer.sleep(4)
-
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               :timer.sleep(1)
                {:result, :client_state_in}
              end) ==
                :result
 
-      :timer.sleep(15)
-
       assert_receive(:pong)
 
-      assert_received {:DOWN, _, :process, ^pool, {:shutdown, :some_reason}}
+      assert_receive {:DOWN, _, :process, ^pool, {:shutdown, :some_reason}}
     end
   end
 end
