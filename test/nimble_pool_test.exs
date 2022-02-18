@@ -1577,5 +1577,42 @@ defmodule NimblePoolTest do
 
       NimblePool.stop(pool, :shutdown)
     end
+
+    test "Bug - Do not remove worker on verification cycle" do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            handle_checkout: fn :checkout, _from, :worker1, pool_state ->
+              {:ok, :client_state_out, :worker1, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, :worker1, pool_state ->
+              {:ok, :worker1, pool_state}
+            end,
+            handle_ping: fn _next, _pool_state ->
+              send(parent, :pong)
+              {:stop, :some_reason}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 1,
+          lazy: true,
+          worker_idle_timeout: 5
+        )
+
+      Process.monitor(pool)
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               Process.sleep(1)
+               {:result, :client_state_in}
+             end) ==
+               :result
+
+      assert_receive(:pong)
+
+      assert_receive {:DOWN, _, :process, ^pool, {:shutdown, :some_reason}}
+    end
   end
 end
