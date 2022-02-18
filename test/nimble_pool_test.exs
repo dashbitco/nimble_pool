@@ -1605,7 +1605,7 @@ defmodule NimblePoolTest do
       Process.monitor(pool)
 
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
-               :timer.sleep(1)
+               Process.sleep(1)
                {:result, :client_state_in}
              end) ==
                :result
