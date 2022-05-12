@@ -407,7 +407,7 @@ defmodule NimblePool do
   @impl true
   def init({worker, arg, pool_size, lazy, worker_idle_timeout, max_idle_pings}) do
     Process.flag(:trap_exit, true)
-    _ = Code.ensure_loaded(worker)
+    Code.ensure_loaded!(worker)
     lazy = if lazy, do: pool_size, else: nil
 
     if worker_idle_timeout do
