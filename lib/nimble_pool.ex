@@ -200,14 +200,14 @@ defmodule NimblePool do
       `worker_idle_timeout + worker_idle_timeout * ceil(number_of_workers/max_idle_pings)`
        instead of `2 * worker_idle_timeout` milliseconds of idle time.
 
-      For instance if you have a pool with 10 workers and a ping of 1 second and:
+      For instance consider a pool with 10 workers and a ping of 1 second.
 
-      Considering a negligible worker termination time and a worst case scenario where all the workers
-      goes idle right after an verification cycle is started.
+      Given a negligible worker termination time and a worst case scenario where all the workers
+      go idle right after a verification cycle is started,
 
-      Without `max_idle_ping` the last work will be terminated in the next cycle, 2 seconds.
+      then without `max_idle_pings` the last worker will be terminated in the next cycle (2 seconds),
 
-      With a `max_idle_ping` of 2, the last worker will be terminated only in the 5th cycle, 6 seconds.
+      whereas with a `max_idle_pings` of 2 the last worker will be terminated only in the 5th cycle (6 seconds).
 
   ## Disclaimers
 
