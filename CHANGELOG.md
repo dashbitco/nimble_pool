@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.0 (2023-03-21)
+
+Stable release.
+
 ## v0.2.6 (2022-02-18)
 
 * Fix a bug on idle timeout causing the pool to empty

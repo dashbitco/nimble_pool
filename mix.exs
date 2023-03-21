@@ -1,7 +1,7 @@
 defmodule NimblePool.MixProject do
   use Mix.Project
 
-  @version "0.2.6"
+  @version "1.0.0"
   @url "https://github.com/dashbitco/nimble_pool"
 
   def project do
