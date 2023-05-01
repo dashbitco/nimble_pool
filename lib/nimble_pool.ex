@@ -15,6 +15,9 @@ defmodule NimblePool do
   @type client_state :: term
   @type user_reason :: term
 
+  @typedoc since: "1.1.0"
+  @type pool :: GenServer.server()
+
   @doc """
   Initializes the worker.
 
@@ -244,8 +247,7 @@ defmodule NimblePool do
   addition or `:restart` and `:shutdown` that control the
   "Child Specification".
   """
-  def child_spec(opts)
-
+  @spec child_spec(keyword) :: Supervisor.child_spec()
   def child_spec(opts) do
     {worker, _} = Keyword.fetch!(opts, :worker)
     {restart, opts} = Keyword.pop(opts, :restart, :permanent)
@@ -283,6 +285,7 @@ defmodule NimblePool do
       Defaults to no limit. See `handle_ping/2` for more details.
 
   """
+  @spec start_link(keyword) :: GenServer.on_start()
   def start_link(opts) do
     {{worker, arg}, opts} = Keyword.pop(opts, :worker)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
@@ -308,6 +311,7 @@ defmodule NimblePool do
   @doc """
   Stops a pool.
   """
+  @spec stop(pool, reason :: term, timeout) :: :ok
   def stop(pool, reason \\ :normal, timeout \\ :infinity) do
     GenServer.stop(pool, reason, timeout)
   end
@@ -327,6 +331,8 @@ defmodule NimblePool do
   `checkout!` also has an optional `timeout` value, this value will be applied
   to checkout operation itself. `checkin` happens asynchronously.
   """
+  @spec checkout!(pool, command :: term, callback, timeout) :: result
+        when callback: (from, client_state -> {result, client_state}), result: var
   def checkout!(pool, command, function, timeout \\ 5_000) when is_function(function, 2) do
     # Reimplementation of gen.erl call to avoid multiple monitors.
     pid = GenServer.whereis(pool)
@@ -379,8 +385,10 @@ defmodule NimblePool do
   checking the state in, which is handy when transferring
   resources that requires two steps.
   """
-  def update({pid, ref}, command) do
+  @spec update(from, command :: term) :: :ok
+  def update({pid, ref} = _from, command) do
     send(pid, {__MODULE__, :update, ref, command})
+    :ok
   end
 
   defp deadline(timeout) when is_integer(timeout) do
