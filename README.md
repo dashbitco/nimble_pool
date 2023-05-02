@@ -14,13 +14,13 @@ In such pools, you usually end-up with two scenarios:
 
   * You invoke the pool manager, which returns the pooled process, which gives you access to the resource. Then you can act directly on the resource, avoiding the data copying, but you need to keep the state of the resource in sync with the process
 
-NimblePool allows you to implement the second scenario without the addition of processes, which leads to a simpler and more efficient implementation. You should consider using NimblePool whenever you have to manage sockets, ports, or NIF resources and you want the client to perform one-off operations on them. For example, NimblePool is a good solution to manage HTTP 1 connections, ports that need to communicate with long-running programs, etc.
+NimblePool allows you to implement the second scenario without the addition of processes, which leads to a simpler and more efficient implementation. You should consider using NimblePool whenever you have to manage sockets, ports, or NIF resources and you want the client to perform one-off operations on them. For example, NimblePool is a good solution to manage HTTP/1 connections, ports that need to communicate with long-running programs, etc.
 
 The downside of NimblePool is that, because all resources are under a single process, any resource management operation will happen on this single process, which is more likely to become a bottleneck. This can be addressed, however, by starting one NimblePool per scheduler and by doing scheduler-based dispatches.
 
 NimblePool may not be a good option to manage processes. After all, the goal of NimblePool is to avoid creating processes for resources. If you already have a process, using a process-based pool such as `poolboy` will provide a better abstraction.
 
-Finally, avoid using NimblePool to manage resources that support multiplexing, such as HTTP 2 connections. In fact, pools are not a good option to manage resources with multiplexing in general, as the pool removes the ability to multiplex.
+Finally, avoid using NimblePool to manage resources that support multiplexing, such as HTTP/2 connections. In fact, pools are not a good option to manage resources with multiplexing in general, as the pool removes the ability to multiplex.
 
 ## Types of callbacks
 
@@ -109,9 +109,9 @@ defmodule PortPool do
 end
 ```
 
-### HTTP1-based example
+### HTTP/1-based example
 
-The pool below uses [Mint](https://hexdocs.pm/mint) for HTTP1 connections. It establishes connections eagerly. A better approach may be to establish connections lazily on checkout, as done by [Finch](https://github.com/keathley/finch), which is built on top of Mint+NimbleOptions.
+The pool below uses [Mint](https://hexdocs.pm/mint) for HTTP/1 connections. It establishes connections eagerly. A better approach may be to establish connections lazily on checkout, as done by [Finch](https://github.com/keathley/finch), which is built on top of [Mint](https://github.com/elixir-mint/mint) + [NimbleOptions](https://github.com/dashbitco/nimble_options).
 
 ```elixir
 defmodule HTTP1Pool do
