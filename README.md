@@ -1,6 +1,8 @@
 # NimblePool
 
-[Online Documentation](https://hexdocs.pm/nimble_pool).
+[![hex.pm badge](https://img.shields.io/badge/Package%20on%20hex.pm-informational)](https://hex.pm/packages/nimble_pool)
+[![Documentation badge](https://img.shields.io/badge/Documentation-ff69b4)][docs]
+[![CI](https://github.com/dashbitco/nimble_pool/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dashbitco/nimble_pool/actions/workflows/ci.yml)
 
 <!-- MDOC !-->
 
@@ -277,3 +279,5 @@ Copyright 2020 Dashbit
   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
   See the License for the specific language governing permissions and
   limitations under the License.
+
+[docs]: https://hexdocs.pm/nimble_pool
