@@ -263,7 +263,7 @@ defmodule NimblePool do
   "Child Specification".
   """
   @spec child_spec(keyword) :: Supervisor.child_spec()
-  def child_spec(opts) do
+  def child_spec(opts) when is_list(opts) do
     {worker, _} = Keyword.fetch!(opts, :worker)
     {restart, opts} = Keyword.pop(opts, :restart, :permanent)
     {shutdown, opts} = Keyword.pop(opts, :shutdown, 5_000)
@@ -301,7 +301,7 @@ defmodule NimblePool do
 
   """
   @spec start_link(keyword) :: GenServer.on_start()
-  def start_link(opts) do
+  def start_link(opts) when is_list(opts) do
     {{worker, arg}, opts} =
       Keyword.pop_lazy(opts, :worker, fn ->
         raise ArgumentError, "missing required :worker option"
