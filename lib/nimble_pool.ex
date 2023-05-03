@@ -72,19 +72,22 @@ defmodule NimblePool do
   @doc """
   Checks a worker out.
 
-  It receives `maybe_wrapped_command`. The `command` is given to the `checkout!/4`
-  call and may optionally be wrapped by `c:handle_enqueue/2`. It must return one of:
+  The `maybe_wrapped_command` is the `command` passed to `checkout!/4` if the worker
+  doesn't implement the `c:handle_enqueue/2` callback, otherwise it's the possibly-wrapped
+  command returned by `c:handle_enqueue/2`.
 
-    * `{:ok, client_state, worker_state, pool_state}`
-    * `{:remove, reason, pool_state}`
-    * `{:skip, Exception.t(), pool_state}`
+  This callback must return one of:
 
-  If `:remove` is returned, `NimblePool` will remove the checked-out worker and
-  attempt to checkout another worker.
+    * `{:ok, client_state, worker_state, pool_state}` — the client state is given to
+      the callback function passed to `checkout!/4`. `worker_state` and `pool_state`
+      can potentially update the state of the checked-out worker and the pool.
 
-  If `:skip` is returned, `NimblePool` will skip the checkout, the client will
-  raise the returned exception, and the worker will be left ready for the next
-  checkout attempt.
+    * `{:remove, reason, pool_state}` — `NimblePool` will remove the checked-out worker and
+      attempt to checkout another worker.
+
+    * `{:skip, Exception.t(), pool_state}` — `NimblePool` will skip the checkout, the client will
+      raise the returned exception, and the worker will be left ready for the next
+      checkout attempt.
 
   > #### Blocking the pool {: .warning}
   >
@@ -92,7 +95,7 @@ defmodule NimblePool do
   > Avoid performing long work in here. Instead, do as much work as
   > possible on the client.
 
-  Once the connection is checked out, the worker won't receive any
+  Once the worker is checked out, the worker won't handle any
   messages targeted to `c:handle_info/2`.
   """
   @doc callback: :worker
@@ -102,9 +105,9 @@ defmodule NimblePool do
               | {:skip, Exception.t(), pool_state}
 
   @doc """
-  Checks a worker in.
+  Checks a worker back in the pool.
 
-  It receives the `client_state`, returned by the `checkout!/4`
+  It receives the potentially-updated `client_state`, returned by the `checkout!/4`
   anonymous function, and it must return either
   `{:ok, worker_state, pool_state}` or `{:remove, reason, pool_state}`.
 
@@ -157,7 +160,7 @@ defmodule NimblePool do
               {:ok, worker_state} | {:remove, user_reason}
 
   @doc """
-  Executed by the pool, whenever a request to check out a worker is enqueued.
+  Executed by the pool whenever a request to check out a worker is enqueued.
 
   The `command` argument should be treated as an opaque value, but it can be
   wrapped with some data to be used in `c:handle_checkout/4`.
@@ -171,6 +174,14 @@ defmodule NimblePool do
   > Avoid performing long work in here.
 
   This callback is optional.
+
+  ## Examples
+
+      @impl NimblePool
+      def handle_enqueue(command, pool_state) do
+        {:ok, {:wrapped, command}, pool_state}
+      end
+
   """
   @doc callback: :pool
   @callback handle_enqueue(command :: term, pool_state) ::
@@ -194,6 +205,9 @@ defmodule NimblePool do
   state and crashes, we don't fully know the `client_state`,
   so the `c:terminate_worker/3` callback needs to take such scenarios
   into account.
+
+  This callback must always return `{:ok, pool_state}` with the potentially-updated
+  pool state.
 
   This callback is optional.
   """
@@ -373,7 +387,7 @@ defmodule NimblePool do
   callback. The `c:handle_checkout/4` callback will return a client state,
   which is given to the `function`.
 
-  The `function` receives two arguments, the requeest
+  The `function` receives two arguments, the request
   (`{pid(), reference()}`) and the `client_state`.
   The function must return a two-element tuple, where the first element is the
   return value for `checkout!/4`, and the second element is the updated `client_state`,
@@ -385,7 +399,7 @@ defmodule NimblePool do
   @spec checkout!(pool, command :: term, function, timeout) :: result
         when function: (from, client_state -> {result, client_state}), result: var
   def checkout!(pool, command, function, timeout \\ 5_000) when is_function(function, 2) do
-    # Reimplementation of gen.erl call to avoid multiple monitors.
+    # Re-implementation of gen.erl call to avoid multiple monitors.
     pid = GenServer.whereis(pool)
 
     unless pid do
@@ -429,12 +443,12 @@ defmodule NimblePool do
   @doc """
   Sends an **update** instruction to the pool about the checked out worker.
 
-  This must be called inside the `checkout!/4` callback with
+  This must be called inside the `checkout!/4` callback function with
   the `from` value given to `c:handle_checkout/4`.
 
   This is useful to update the pool's state before effectively
   checking the state in, which is handy when transferring
-  resources that requires two steps.
+  resources requires two steps.
   """
   @spec update(from, command :: term) :: :ok
   def update({pid, ref} = _from, command) do
