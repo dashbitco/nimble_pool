@@ -21,15 +21,23 @@ defmodule NimblePool do
   @doc """
   Initializes the worker.
 
-  It receives the worker argument passed to `start_link/1`. It must
-  return `{:ok, worker_state, pool_state}` or `{:async, fun}`, where the `fun`
+  It receives the worker argument passed to `start_link/1` if `c:init_pool/1` is
+  not implemented, otherwise the pool state returned by `c:init_pool/1`. It must
+  return `{:ok, worker_state, pool_state}` or `{:async, fun, pool_state}`, where the `fun`
   is a zero-arity function that must return the worker state.
+
+  If this callback returns `{:async, fun, pool_state}`, `fun` is executed in a **separate
+  one-off process**. Because of this, if you start resources that the pool needs to "own",
+  you need to transfer ownership to the pool process. For example, if your async `fun`
+  opens a `:gen_tcp` socket, you'll have to use `:gen_tcp.controlling_process/2` to transfer
+  ownership back to the pool.
 
   > #### Blocking the pool {: .warning}
   >
-  > This callback is synchronous and therefore will block the pool.
-  > If you need to perform long initialization, consider using the
-  > `{:async, fun}` return type.
+  > This callback is synchronous and therefore will block the pool, potentially
+  > for a significant amount of time since it's executed in the pool process once
+  > per worker. > If you need to perform long initialization, consider using the
+  > `{:async, fun, pool_state}` return type.
   """
   @doc callback: :worker
   @callback init_worker(pool_state) ::
@@ -49,6 +57,14 @@ defmodule NimblePool do
   `init_worker`. By default, it simply returns the given arguments.
 
   This callback is optional.
+
+  ## Examples
+
+      @impl NimblePool
+      def init_pool(options) do
+        Registry.register(options[:registry], :some_key, :some_value)
+      end
+
   """
   @doc callback: :pool
   @callback init_pool(init_arg) :: {:ok, pool_state} | :ignore | {:stop, reason :: any()}
@@ -120,18 +136,19 @@ defmodule NimblePool do
               {:ok, worker_state, pool_state}
 
   @doc """
-  Receives a message in the worker.
+  Receives a message in the pool and handles it as each worker.
 
   It receives the `message` and it must return either
-  `{:ok, worker_state}` or `{:remove, reason}`.
+  `{:ok, worker_state}` to update the worker state, or `{:remove, reason}` to
+  remove the worker.
 
   Since there is only a single pool process that can receive messages, this
   callback is executed once for every worker when the pool receives `message`.
 
   > #### Blocking the pool {: .warning}
   >
-  > This callback is synchronous and therefore will block the pool.
-  > Avoid performing long work in here.
+  > This callback is synchronous and therefore will block the pool while it
+  > executes for each worker. Avoid performing long work in here.
 
   This callback is optional.
   """
@@ -261,6 +278,11 @@ defmodule NimblePool do
   It accepts the same options as `start_link/1` with the
   addition or `:restart` and `:shutdown` that control the
   "Child Specification".
+
+  ## Examples
+
+      NimblePool.child_spec(worker: {__MODULE__, :some_arg}, restart: :temporary)
+
   """
   @spec child_spec(keyword) :: Supervisor.child_spec()
   def child_spec(opts) when is_list(opts) do
@@ -328,7 +350,16 @@ defmodule NimblePool do
   end
 
   @doc """
-  Stops a pool.
+  Stops the given `pool`.
+
+  The pool exits with the given `reason`. The pool has `timeout` milliseconds
+  to terminate, otherwise it will be brutally terminated.
+
+  ## Examples
+
+      NimblePool.stop(pool)
+      #=> :ok
+
   """
   @spec stop(pool, reason :: term, timeout) :: :ok
   def stop(pool, reason \\ :normal, timeout \\ :infinity) do
