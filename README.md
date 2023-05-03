@@ -3,6 +3,7 @@
 [![hex.pm badge](https://img.shields.io/badge/Package%20on%20hex.pm-informational)](https://hex.pm/packages/nimble_pool)
 [![Documentation badge](https://img.shields.io/badge/Documentation-ff69b4)][docs]
 [![CI](https://github.com/dashbitco/nimble_pool/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dashbitco/nimble_pool/actions/workflows/ci.yml)
+[![Coverage Status](https://coveralls.io/repos/github/dashbitco/nimble_pool/badge.svg?branch=main)](https://coveralls.io/github/dashbitco/nimble_pool?branch=main)
 
 <!-- MDOC !-->
 
