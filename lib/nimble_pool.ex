@@ -283,9 +283,9 @@ defmodule NimblePool do
 
     * `:worker` - a `{worker_mod, worker_init_arg}` tuple with the worker
       module that implements the `NimblePool` behaviour and the worker
-      initial argument. This argument is required.
+      initial argument. This argument is **required**.
 
-    * `:pool_size` - how many workers in the pool. Defaults to 10.
+    * `:pool_size` - how many workers in the pool. Defaults to `10`.
 
     * `:lazy` - When `true`, workers are started lazily, only when necessary.
       Defaults to `false`.
@@ -302,7 +302,11 @@ defmodule NimblePool do
   """
   @spec start_link(keyword) :: GenServer.on_start()
   def start_link(opts) do
-    {{worker, arg}, opts} = Keyword.pop(opts, :worker)
+    {{worker, arg}, opts} =
+      Keyword.pop_lazy(opts, :worker, fn ->
+        raise ArgumentError, "missing required :worker option"
+      end)
+
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 10)
     {lazy, opts} = Keyword.pop(opts, :lazy, false)
     {worker_idle_timeout, opts} = Keyword.pop(opts, :worker_idle_timeout, nil)
@@ -312,8 +316,8 @@ defmodule NimblePool do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
     end
 
-    unless pool_size > 0 do
-      raise ArgumentError, "pool_size must be more than 0, got: #{inspect(pool_size)}"
+    unless is_integer(pool_size) and pool_size > 0 do
+      raise ArgumentError, "pool_size must be a positive integer, got: #{inspect(pool_size)}"
     end
 
     GenServer.start_link(

@@ -124,6 +124,32 @@ defmodule NimblePoolTest do
     end
   end
 
+  describe "start_link/1" do
+    test "validates the :worker option" do
+      assert_raise ArgumentError, ~r/missing required :worker option/, fn ->
+        NimblePool.start_link([])
+      end
+
+      assert_raise ArgumentError, ~r/worker must be an atom/, fn ->
+        NimblePool.start_link(worker: {"not an atom", []})
+      end
+    end
+
+    test "validates the :pool_size option" do
+      assert_raise ArgumentError, ~r/pool_size must be a positive integer/, fn ->
+        NimblePool.start_link(worker: {StatefulPool, []}, pool_size: :not_an_int)
+      end
+
+      assert_raise ArgumentError, ~r/pool_size must be a positive integer/, fn ->
+        NimblePool.start_link(worker: {StatefulPool, []}, pool_size: 0)
+      end
+
+      assert_raise ArgumentError, ~r/pool_size must be a positive integer/, fn ->
+        NimblePool.start_link(worker: {StatefulPool, []}, pool_size: -1)
+      end
+    end
+  end
+
   test "starts the pool with init_pool, checkout, checkin, and terminate" do
     parent = self()
 
