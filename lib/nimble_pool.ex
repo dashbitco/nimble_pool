@@ -125,6 +125,9 @@ defmodule NimblePool do
   It receives the `message` and it must return either
   `{:ok, worker_state}` or `{:remove, reason}`.
 
+  Since there is only a single pool process that can receive messages, this
+  callback is executed once for every worker when the pool receives `message`.
+
   > #### Blocking the pool {: .warning}
   >
   > This callback is synchronous and therefore will block the pool.
