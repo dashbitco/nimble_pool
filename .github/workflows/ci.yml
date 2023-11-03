@@ -41,7 +41,7 @@ jobs:
             _build
           key: ${{ runner.os }}-mix-${{matrix.pair.elixir}}-${{matrix.pair.otp}}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-
+            ${{ runner.os }}-mix--${{matrix.pair.elixir}}-${{matrix.pair.otp}}-
 
       - run: mix deps.get
 
