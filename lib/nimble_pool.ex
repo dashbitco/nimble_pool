@@ -872,6 +872,9 @@ defmodule NimblePool do
         if time_diff >= state.worker_idle_timeout do
           case maybe_ping_worker(worker_server_state, state) do
             {:ok, new_worker_state} ->
+              # We don't need to update the worker_metadata because, by definition,
+              # if we are checking for idle resources again and the timestamp is the same,
+              # it is because it has to be checked again.
               new_resource_data = {new_worker_state, worker_metadata}
               new_resources = :queue.in(new_resource_data, new_resources)
 
