@@ -20,7 +20,7 @@ jobs:
               elixir: 1.7.4
               otp: 20.3.8.26
           - pair:
-              elixir: 1.14.4
+              elixir: 1.15.7
               otp: 25.3
             lint: lint
             coverage: coverage
