@@ -41,7 +41,7 @@ defmodule NimblePool do
   """
   @doc callback: :worker
   @callback init_worker(pool_state) ::
-              {:ok, worker_state, pool_state} | {:async, (() -> worker_state), pool_state}
+              {:ok, worker_state, pool_state} | {:async, (-> worker_state), pool_state}
 
   @doc """
   Initializes the pool.
@@ -435,6 +435,7 @@ defmodule NimblePool do
         exit!(reason, :checkout, [pool])
     after
       timeout ->
+        send(pid, {__MODULE__, :cancel, ref, :timeout})
         Process.demonitor(ref, [:flush])
         exit!(:timeout, :checkout, [pool])
     end
@@ -723,8 +724,9 @@ defmodule NimblePool do
         state = remove_request(state, ref, mon_ref)
         {:noreply, remove_worker(reason, worker_server_state, state)}
 
+      # The client timed out, sent us a message, and we dropped the deadlined request
       %{} ->
-        exit(:unexpected_remove)
+        {:noreply, state}
     end
   end
 
