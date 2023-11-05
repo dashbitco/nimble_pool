@@ -67,7 +67,7 @@ defmodule NimblePoolTest do
           [{^instruction, return} | instructions] when is_function(return) ->
             {return, instructions}
 
-          # Always accept terminate_pool as a valida instruction when there is no more instructions
+          # Always accept terminate_pool as a valid instruction when there is no more instructions
           [] = state ->
             if instruction == :terminate_pool,
               do: {fn _, _ -> :ok end, []},
