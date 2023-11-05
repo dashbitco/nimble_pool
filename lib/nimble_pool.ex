@@ -278,13 +278,33 @@ defmodule NimblePool do
             ) ::
               {:ok, worker_state} | {:remove, user_reason()} | {:stop, user_reason()}
 
+  @doc """
+  Handle pool termination.
+
+  The `reason` argmument is the same given to GenServer's terminate/2 callback.
+
+  No worker terminantion need to be done here because `terminate_worker/3` 
+  callback is already called for every worker before `terminate_pool/2`
+
+  This should be used only for clean up extra resources that can not be
+  handled by `terminate_worker/3` callback.
+
+  This callback is optional.
+  """
+  @doc callback: :pool
+  @callback terminate_pool(
+              reason :: :DOWN | :timeout | :throw | :error | :exit | user_reason,
+              pool_state
+            ) :: :ok
+
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
                       handle_info: 2,
                       handle_enqueue: 2,
                       handle_update: 3,
                       handle_ping: 2,
-                      terminate_worker: 3
+                      terminate_worker: 3,
+                      terminate_pool: 2
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -679,9 +699,13 @@ defmodule NimblePool do
   end
 
   @impl true
-  def terminate(reason, %{resources: resources} = state) do
+  def terminate(reason, %{worker: worker, resources: resources} = state) do
     for {worker_server_state, _} <- :queue.to_list(resources) do
       maybe_terminate_worker(reason, worker_server_state, state)
+    end
+
+    if function_exported?(worker, :terminate_pool, 2) do
+      worker.terminate_pool(reason, state)
     end
 
     :ok
