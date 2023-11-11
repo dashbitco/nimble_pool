@@ -33,21 +33,9 @@ defmodule NimblePoolTest do
       next(instructions, :terminate_worker, &[reason, &1, pool_state])
     end
 
-    def terminate_pool(reason, pool_state) do
-      # Since this callback does not receive any specific worker
-      # We can get the first one to read the instructions
-      instructions = pool_state.resources |> elem(0) |> List.first() |> elem(0)
-      # We always allow skip ahead on terminate
-      instructions = Enum.drop_while(instructions, &(elem(&1, 0) != :terminate_pool))
-      next(instructions, :terminate_pool, fn _ -> [reason, pool_state] end)
-    end
-
     defp next([{instruction, return} | instructions], instruction, args) do
       apply(return, args.(instructions))
     end
-
-    # Always accept pool termination as a valid instruction
-    defp next([], :terminate_pool, _args), do: :ok
 
     defp next(instructions, instruction, _args) do
       raise "expected #{inspect(instruction)}, state was #{inspect(instructions)}"
@@ -1668,65 +1656,28 @@ defmodule NimblePoolTest do
     test "should terminate workers and call parent when terminating" do
       parent = self()
 
-      pool =
-        stateless_pool!(
-          init_pool: fn next ->
-            {:ok, next}
-          end,
-          init_worker: fn next -> {:ok, next} end,
-          terminate_worker: fn reason, _, state ->
-            send(parent, {:terminate_worker, reason})
-            {:ok, state}
-          end,
-          terminate_pool: fn reason, _pool_state ->
-            send(parent, {:terminate_pool, reason})
-            :ok
-          end
-        )
-
-      Process.monitor(pool)
-
-      NimblePool.stop(pool, :shutdown)
-
-      assert_received {:terminate_worker, :shutdown}
-      assert_received {:terminate_pool, :shutdown}
-    end
-
-    test "should terminate workers and call parent when terminating - statefull pool" do
-      parent = self()
-
       {_, pool} =
         stateful_pool!(
           [
             init_worker: fn next -> {:ok, :worker1, next} end,
-            init_worker: fn next -> {:ok, :worker2, next} end,
-            init_worker: fn next -> {:ok, :worker3, next} end,
             terminate_worker: fn reason, worker, state ->
-              send(parent, {:terminated_worker, worker, reason})
-              {:ok, state}
-            end,
-            terminate_worker: fn reason, worker, state ->
-              send(parent, {:terminated_worker, worker, reason})
-              {:ok, state}
-            end,
-            terminate_worker: fn reason, worker, state ->
-              send(parent, {:terminated_worker, worker, reason})
+              send(parent, {:terminated_worker, worker, reason, System.monotonic_time()})
               {:ok, state}
             end,
             terminate_pool: fn reason, _state ->
-              send(parent, {:terminated_pool, reason})
+              send(parent, {:terminated_pool, reason, System.monotonic_time()})
               :ok
             end
           ],
-          pool_size: 3
+          pool_size: 1
         )
 
       NimblePool.stop(pool, :shutdown)
 
-      assert_receive {:terminated_worker, :worker1, :shutdown}
-      assert_receive {:terminated_worker, :worker2, :shutdown}
-      assert_receive {:terminated_worker, :worker3, :shutdown}
-      assert_receive {:terminated_pool, :shutdown}
+      assert_receive {:terminated_worker, :worker1, :shutdown, termination_time_worker}
+      assert_receive {:terminated_pool, :shutdown, termination_time_pool}
+
+      assert termination_time_pool > termination_time_worker
     end
   end
 end
