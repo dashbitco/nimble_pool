@@ -55,6 +55,12 @@ defmodule NimblePoolTest do
           [{^instruction, return} | instructions] when is_function(return) ->
             {return, instructions}
 
+          # Always accept terminate_pool as a valid instruction when there is no more instructions
+          [] = state ->
+            if instruction == :terminate_pool,
+              do: {fn _, _ -> :ok end, []},
+              else: raise("expected #{inspect(instruction)}, state was #{inspect(state)}")
+
           state ->
             raise "expected #{inspect(instruction)}, state was #{inspect(state)}"
         end)
@@ -96,6 +102,10 @@ defmodule NimblePoolTest do
 
     def terminate_worker(reason, worker_state, pid) do
       TestAgent.next(pid, :terminate_worker, [reason, worker_state, pid])
+    end
+
+    def terminate_pool(reason, pool_state) do
+      TestAgent.next(pool_state.state, :terminate_pool, [reason, pool_state])
     end
   end
 
@@ -1639,6 +1649,35 @@ defmodule NimblePoolTest do
       assert_receive(:pong)
 
       assert_receive {:DOWN, _, :process, ^pool, {:shutdown, :some_reason}}
+    end
+  end
+
+  describe "terminate_pool" do
+    test "should terminate workers and call parent when terminating" do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            terminate_worker: fn reason, worker, state ->
+              send(parent, {:terminated_worker, worker, reason, System.monotonic_time()})
+              {:ok, state}
+            end,
+            terminate_pool: fn reason, _state ->
+              send(parent, {:terminated_pool, reason, System.monotonic_time()})
+              :ok
+            end
+          ],
+          pool_size: 1
+        )
+
+      NimblePool.stop(pool, :shutdown)
+
+      assert_receive {:terminated_worker, :worker1, :shutdown, termination_time_worker}
+      assert_receive {:terminated_pool, :shutdown, termination_time_pool}
+
+      assert termination_time_pool > termination_time_worker
     end
   end
 end
