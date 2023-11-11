@@ -283,8 +283,8 @@ defmodule NimblePool do
 
   The `reason` argmument is the same given to GenServer's terminate/2 callback.
 
-  No worker terminantion need to be done here because `terminate_worker/3` 
-  callback is already called for every worker before `terminate_pool/2`
+  It is not necessary to terminate workers here because the
+  `terminate_worker/3` callback has already been invoked.
 
   This should be used only for clean up extra resources that can not be
   handled by `terminate_worker/3` callback.
