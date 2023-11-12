@@ -44,12 +44,12 @@ defmodule PortPool do
   @doc ~S"""
   Executes a given command against a port kept by the pool.
 
-  First we start the port:
+  First we start the pool of ports:
 
       iex> child = {NimblePool, worker: {PortPool, :cat}, name: PortPool}
       iex> Supervisor.start_link([child], strategy: :one_for_one)
 
-  Now we can run commands against the pool of ports:
+  Now we can run commands against the ports of the pool:
 
       iex> PortPool.command(PortPool, "hello\n")
       "hello\n"
@@ -123,12 +123,12 @@ defmodule HTTP1Pool do
   @doc ~S"""
   Executes a given command against a connection kept by the pool.
 
-  First we start the connection:
+  First we start the pool:
 
       child = {NimblePool, worker: {HTTP1Pool, {:https, "elixir-lang.org", 443}}, name: HTTP1Pool}
       Supervisor.start_link([child], strategy: :one_for_one)
 
-  Then we can access it:
+  Then we can use the connections of the pool:
 
       iex> HTTP1Pool.get(HTTP1Pool, "/")
       {:ok, %{status: 200, ...}}
