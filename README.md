@@ -61,13 +61,13 @@ defmodule PortPool do
     pool_timeout = Keyword.get(opts, :pool_timeout, 5000)
     receive_timeout = Keyword.get(opts, :receive_timeout, 15000)
 
-    NimblePool.checkout!(pool, :checkout, fn {pid, _}, port ->
+    NimblePool.checkout!(pool, :checkout, fn _from, port ->
       send(port, {self(), {:command, command}})
 
       receive do
         {^port, {:data, data}} ->
           try do
-            Port.connect(port, pid)
+            Port.unlink(port)
             {data, :ok}
           rescue
             _ -> {data, :close}
