@@ -67,7 +67,7 @@ defmodule PortPool do
       receive do
         {^port, {:data, data}} ->
           try do
-            Port.unlink(port)
+            Process.unlink(port)
             {data, :ok}
           rescue
             _ -> {data, :close}
