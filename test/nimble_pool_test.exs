@@ -108,8 +108,8 @@ defmodule NimblePoolTest do
       TestAgent.next(pool_state.state, :terminate_pool, [reason, pool_state])
     end
 
-    def handle_cancelled(worker_state, pool_state, context) do
-      TestAgent.next(pool_state, :handle_cancelled, [worker_state, pool_state, context])
+    def handle_cancelled(context, pool_state) do
+      TestAgent.next(pool_state, :handle_cancelled, [context, pool_state])
     end
   end
 
@@ -1023,7 +1023,7 @@ defmodule NimblePoolTest do
           handle_checkout: fn :checkout, _from, _next, pool_state ->
             {:ok, :client_state_out, :server_state_out, pool_state}
           end,
-          handle_cancelled: fn :server_state_out, _pool_state, :checked_out -> :ok end,
+          handle_cancelled: fn :checked_out, _pool_state -> :ok end,
           terminate_worker: fn reason, :server_state_out, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -1059,7 +1059,7 @@ defmodule NimblePoolTest do
           handle_update: fn :update, _next, pool_state ->
             {:ok, :updated_state, pool_state}
           end,
-          handle_cancelled: fn :server_state_out, _pool_state, :checked_out -> :ok end,
+          handle_cancelled: fn :checked_out, _pool_state -> :ok end,
           terminate_worker: fn reason, :updated_state, pool_state ->
             send(parent, {:terminate, reason})
             {:ok, pool_state}
@@ -1698,8 +1698,8 @@ defmodule NimblePoolTest do
             handle_checkout: fn :checkout, _from, worker_state, pool_state ->
               {:ok, :client_state_out, worker_state, pool_state}
             end,
-            handle_cancelled: fn worker_state, _pool_state, :checked_out ->
-              send(parent, {:ping, worker_state})
+            handle_cancelled: fn :checked_out, _pool_state ->
+              send(parent, :ping)
               :ok
             end,
             terminate_worker: fn _reason, _, state -> {:ok, state} end
@@ -1716,7 +1716,7 @@ defmodule NimblePoolTest do
         end
       )
 
-      assert_receive({:ping, :worker1})
+      assert_receive(:ping)
 
       NimblePool.stop(pool, :shutdown)
     end
@@ -1731,8 +1731,8 @@ defmodule NimblePoolTest do
             handle_checkout: fn :checkout, _from, worker_state, pool_state ->
               {:ok, :client_state_out, worker_state, pool_state}
             end,
-            handle_cancelled: fn nil, _pool_state, :queued ->
-              send(parent, {:ping, nil})
+            handle_cancelled: fn :queued, _pool_state ->
+              send(parent, :ping)
               :ok
             end,
             handle_checkin: fn :client_state_in, _from, next, pool_state ->
@@ -1766,7 +1766,7 @@ defmodule NimblePoolTest do
 
       send(task1.pid, :release)
 
-      assert_receive({:ping, nil})
+      assert_receive(:ping)
 
       NimblePool.stop(pool, :shutdown)
     end
@@ -1778,8 +1778,8 @@ defmodule NimblePoolTest do
         stateful_pool!(
           [
             init_worker: fn next -> {:ok, :worker1, next} end,
-            handle_cancelled: fn nil, _pool_state, :queued ->
-              send(parent, {:ping, nil})
+            handle_cancelled: fn :queued, _pool_state ->
+              send(parent, :ping)
               :ok
             end,
             handle_checkout: fn :checkout, _from, worker_state, pool_state ->
@@ -1807,7 +1807,7 @@ defmodule NimblePoolTest do
 
       :sys.resume(pool)
 
-      assert_receive({:ping, nil})
+      assert_receive(:ping)
 
       assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
                {:result, :client_state_in}

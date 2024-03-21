@@ -305,19 +305,17 @@ defmodule NimblePool do
   The context argument may be `:queued` or `:checked_out`:
 
   * `:queued` means the cancellation happened before resource checkout. This may happen
-  when the pool is starving under load and can not serve resources. Since no checkout 
-  happened the worker_state argument will be `nil`.
+  when the pool is starving under load and can not serve resources.
 
   * `:checked_out` means the cancellation happened after resource checkout. This may happen
   when the function given to `checkout!/4` raises.
 
   This callback is optional.
   """
-  @doc callback: :worker
+  @doc callback: :pool
   @callback handle_cancelled(
-              worker_state :: worker_state | nil,
-              pool_state,
-              context :: :queued | :checked_out
+              context :: :queued | :checked_out,
+              pool_state
             ) :: :ok
 
   @optional_callbacks init_pool: 1,
@@ -328,7 +326,7 @@ defmodule NimblePool do
                       handle_ping: 2,
                       terminate_worker: 3,
                       terminate_pool: 2,
-                      handle_cancelled: 3
+                      handle_cancelled: 2
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -777,8 +775,8 @@ defmodule NimblePool do
     case requests do
       # Exited or timed out before we could serve it
       %{^ref => {_, mon_ref, :command, _command, _deadline}} ->
-        if function_exported?(worker, :handle_cancelled, 3) do
-          args = [nil, pool_state, :queued]
+        if function_exported?(worker, :handle_cancelled, 2) do
+          args = [:queued, pool_state]
           apply_worker_callback(worker, :handle_cancelled, args)
         end
 
@@ -786,8 +784,8 @@ defmodule NimblePool do
 
       # Exited or errored during client processing
       %{^ref => {_, mon_ref, :state, worker_server_state}} ->
-        if function_exported?(worker, :handle_cancelled, 3) do
-          args = [worker_server_state, pool_state, :checked_out]
+        if function_exported?(worker, :handle_cancelled, 2) do
+          args = [:checked_out, pool_state]
           apply_worker_callback(worker, :handle_cancelled, args)
         end
 
@@ -796,8 +794,8 @@ defmodule NimblePool do
 
       # The client timed out, sent us a message, and we dropped the deadlined request
       %{} ->
-        if function_exported?(worker, :handle_cancelled, 3) do
-          args = [nil, pool_state, :queued]
+        if function_exported?(worker, :handle_cancelled, 2) do
+          args = [:queued, pool_state]
           apply_worker_callback(worker, :handle_cancelled, args)
         end
 
