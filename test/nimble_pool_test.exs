@@ -107,6 +107,10 @@ defmodule NimblePoolTest do
     def terminate_pool(reason, pool_state) do
       TestAgent.next(pool_state.state, :terminate_pool, [reason, pool_state])
     end
+
+    def handle_cancelled(worker_state, pool_state, context) do
+      TestAgent.next(pool_state, :handle_cancelled, [worker_state, pool_state, context])
+    end
   end
 
   defp stateless_pool!(instructions, opts \\ []) do
@@ -1019,6 +1023,7 @@ defmodule NimblePoolTest do
           handle_checkout: fn :checkout, _from, _next, pool_state ->
             {:ok, :client_state_out, :server_state_out, pool_state}
           end,
+          handle_cancelled: fn :server_state_out, _pool_state, :checked_out -> :ok end,
           terminate_worker: fn reason, :server_state_out, state ->
             send(parent, {:terminate, reason})
             {:ok, state}
@@ -1054,6 +1059,7 @@ defmodule NimblePoolTest do
           handle_update: fn :update, _next, pool_state ->
             {:ok, :updated_state, pool_state}
           end,
+          handle_cancelled: fn :server_state_out, _pool_state, :checked_out -> :ok end,
           terminate_worker: fn reason, :updated_state, pool_state ->
             send(parent, {:terminate, reason})
             {:ok, pool_state}
@@ -1678,6 +1684,136 @@ defmodule NimblePoolTest do
       assert_receive {:terminated_pool, :shutdown, termination_time_pool}
 
       assert termination_time_pool > termination_time_worker
+    end
+  end
+
+  describe "handle_cancelled" do
+    test "should run when client raise after checkout" do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            handle_checkout: fn :checkout, _from, worker_state, pool_state ->
+              {:ok, :client_state_out, worker_state, pool_state}
+            end,
+            handle_cancelled: fn worker_state, _pool_state, :checked_out ->
+              send(parent, {:ping, worker_state})
+              :ok
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 1
+        )
+
+      assert_raise(
+        RuntimeError,
+        fn ->
+          NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+            raise "unexpected error"
+          end)
+        end
+      )
+
+      assert_receive({:ping, :worker1})
+
+      NimblePool.stop(pool, :shutdown)
+    end
+
+    test "should run when checkout timeout and known request ref" do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            handle_checkout: fn :checkout, _from, worker_state, pool_state ->
+              {:ok, :client_state_out, worker_state, pool_state}
+            end,
+            handle_cancelled: fn nil, _pool_state, :queued ->
+              send(parent, {:ping, nil})
+              :ok
+            end,
+            handle_checkin: fn :client_state_in, _from, next, pool_state ->
+              {:ok, next, pool_state}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 1
+        )
+
+      task1 =
+        Task.async(fn ->
+          NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+            send(parent, :lock)
+            assert_receive :release
+            {:result, :client_state_in}
+          end)
+        end)
+
+      assert_receive :lock
+
+      assert {:timeout, {NimblePool, :checkout, _}} =
+               catch_exit(
+                 NimblePool.checkout!(
+                   pool,
+                   :checkout,
+                   fn _ref, :client_state_out -> raise "should never execute this line" end,
+                   1
+                 )
+               )
+
+      send(task1.pid, :release)
+
+      assert_receive({:ping, nil})
+
+      NimblePool.stop(pool, :shutdown)
+    end
+
+    test "should run when checkout timeout and unkown request ref" do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next -> {:ok, :worker1, next} end,
+            handle_cancelled: fn nil, _pool_state, :queued ->
+              send(parent, {:ping, nil})
+              :ok
+            end,
+            handle_checkout: fn :checkout, _from, worker_state, pool_state ->
+              {:ok, :client_state_out, worker_state, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, next, pool_state ->
+              {:ok, next, pool_state}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end
+          ],
+          pool_size: 1
+        )
+
+      :sys.suspend(pool)
+
+      assert {:timeout, {NimblePool, :checkout, _}} =
+               catch_exit(
+                 NimblePool.checkout!(
+                   pool,
+                   :checkout,
+                   fn _ref, :client_state_out -> raise "should never execute this line" end,
+                   1
+                 )
+               )
+
+      :sys.resume(pool)
+
+      assert_receive({:ping, nil})
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               {:result, :client_state_in}
+             end) == :result
+
+      NimblePool.stop(pool, :shutdown)
     end
   end
 end
