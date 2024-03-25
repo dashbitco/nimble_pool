@@ -29,7 +29,7 @@ defmodule NimblePool.MixProject do
 
   defp deps do
     [
-      {:ex_doc, "~> 0.21", only: :docs},
+      {:ex_doc, "~> 0.31", only: :docs},
       {:excoveralls, "~> 0.16.1", only: :test}
     ]
   end
@@ -39,7 +39,7 @@ defmodule NimblePool.MixProject do
       main: "NimblePool",
       source_ref: "v#{@version}",
       source_url: @url,
-      groups_for_functions: [
+      groups_for_docs: [
         "Worker callbacks": &(&1[:callback] == :worker),
         "Pool callbacks": &(&1[:callback] == :pool)
       ]
