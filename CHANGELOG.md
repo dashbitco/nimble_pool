@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.0 (2024-03-25)
+
+* Add `handle_cancelled/2` pool callback
+
 ## v1.0.0 (2023-03-21)
 
 Stable release.
