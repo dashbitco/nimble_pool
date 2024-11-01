@@ -335,6 +335,7 @@ defmodule NimblePool do
                       handle_enqueue: 2,
                       handle_update: 3,
                       handle_ping: 2,
+                      handle_ping: 1,
                       terminate_worker: 3,
                       terminate_pool: 2,
                       handle_cancelled: 2
