@@ -318,6 +318,17 @@ defmodule NimblePool do
               pool_state
             ) :: :ok
 
+  @doc """
+  Handle pings due to pool inactivity.
+
+  Runs when the idle pool timer detects no activity for a duration exceeding :pool_idle_timeout (in milliseconds).
+  A pool is idle if no checkouts or checkins occur within this period.
+
+  This callback is optional.
+  """
+  @doc callback: :pool
+  @callback handle_ping(pool_state) :: {:ok, pool_state} | {:remove, user_reason(), pool_state}
+
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
                       handle_info: 2,
@@ -376,6 +387,10 @@ defmodule NimblePool do
     * `:max_idle_pings` - Defines a limit to the number of workers that can be pinged
       for each cycle of the `handle_ping/2` optional callback.
       Defaults to no limit. See `handle_ping/2` for more details.
+
+    * `:pool_idle_timeout` -  Timeout in milliseconds to consider the pool idle.
+      If set, starts a periodic timer at this interval to ping the pool via the
+      optional `handle_ping/1` callback if there's no activity. Defaults to no timeout.
 
   """
   @spec start_link(keyword) :: GenServer.on_start()
@@ -762,7 +777,7 @@ defmodule NimblePool do
     if diff > timeout do
       case do_check_idle_pool(state) do
         {:ok, new_state} -> {:noreply, new_state}
-        {:stop, reason, state} -> {:stop, {:shutdown, reason}, state}
+        {:stop, reason, new_state} -> {:stop, {:shutdown, reason}, new_state}
       end
     else
       {:noreply, state}
