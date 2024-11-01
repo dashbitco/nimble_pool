@@ -389,6 +389,7 @@ defmodule NimblePool do
     {lazy, opts} = Keyword.pop(opts, :lazy, false)
     {worker_idle_timeout, opts} = Keyword.pop(opts, :worker_idle_timeout, nil)
     {max_idle_pings, opts} = Keyword.pop(opts, :max_idle_pings, -1)
+    {pool_idle_timeout, opts} = Keyword.pop(opts, :pool_idle_timeout, nil)
 
     unless is_atom(worker) do
       raise ArgumentError, "worker must be an atom, got: #{inspect(worker)}"
@@ -400,7 +401,7 @@ defmodule NimblePool do
 
     GenServer.start_link(
       __MODULE__,
-      {worker, arg, pool_size, lazy, worker_idle_timeout, max_idle_pings},
+      {worker, arg, pool_size, lazy, worker_idle_timeout, max_idle_pings, pool_idle_timeout},
       opts
     )
   end
@@ -521,7 +522,7 @@ defmodule NimblePool do
   ## Callbacks
 
   @impl true
-  def init({worker, arg, pool_size, lazy, worker_idle_timeout, max_idle_pings}) do
+  def init({worker, arg, pool_size, lazy, worker_idle_timeout, max_idle_pings, pool_idle_timeout}) do
     Process.flag(:trap_exit, true)
 
     case Code.ensure_loaded(worker) do
@@ -540,6 +541,16 @@ defmodule NimblePool do
       else
         IO.warn(
           ":worker_idle_timeout was given but the worker does not export a handle_ping/2 callback"
+        )
+      end
+    end
+
+    if pool_idle_timeout do
+      if function_exported?(worker, :handle_ping, 1) do
+        Process.send_after(self(), :check_idle_pool, pool_idle_timeout)
+      else
+        IO.warn(
+          ":pool_idle_timeout was given but the worker does not export a handle_ping/1 callback"
         )
       end
     end
@@ -565,7 +576,9 @@ defmodule NimblePool do
         state: pool_state,
         lazy: lazy,
         worker_idle_timeout: worker_idle_timeout,
-        max_idle_pings: max_idle_pings
+        max_idle_pings: max_idle_pings,
+        pool_idle_timeout: pool_idle_timeout,
+        last_activity_ts: System.monotonic_time(:millisecond)
       }
 
       {:ok, state}
@@ -582,11 +595,18 @@ defmodule NimblePool do
 
     case handle_enqueue(worker, command, pool_state) do
       {:ok, command, pool_state} ->
-        {:noreply, maybe_checkout(command, mon_ref, deadline, from, %{state | state: pool_state})}
+        {:noreply,
+         maybe_checkout(command, mon_ref, deadline, from, %{
+           state
+           | state: pool_state,
+             last_activity_ts: System.monotonic_time(:millisecond)
+         })}
 
       {:skip, exception, pool_state} ->
         state = remove_request(%{state | state: pool_state}, ref, mon_ref)
-        {:reply, {:skipped, exception}, state}
+
+        {:reply, {:skipped, exception},
+         %{state | last_activity_ts: System.monotonic_time(:millisecond)}}
     end
   end
 
@@ -637,7 +657,13 @@ defmodule NimblePool do
           end
 
         state = remove_request(state, ref, mon_ref)
-        {:noreply, maybe_checkout(%{state | resources: resources})}
+
+        {:noreply,
+         maybe_checkout(%{
+           state
+           | resources: resources,
+             last_activity_ts: System.monotonic_time(:millisecond)
+         })}
 
       %{} ->
         exit(:unexpected_checkin)
@@ -720,6 +746,26 @@ defmodule NimblePool do
 
       {:stop, reason, state} ->
         {:stop, {:shutdown, reason}, state}
+    end
+  end
+
+  def handle_info(:check_idle_pool, state) do
+    %{
+      last_activity_ts: last_ts,
+      pool_idle_timeout: timeout
+    } = state
+
+    Process.send_after(self(), :check_idle_pool, timeout)
+
+    diff = System.monotonic_time(:millisecond) - last_ts
+
+    if diff > timeout do
+      case do_check_idle_pool(state) do
+        {:ok, new_state} -> {:noreply, new_state}
+        {:stop, reason, state} -> {:stop, {:shutdown, reason}, state}
+      end
+    else
+      {:noreply, state}
     end
   end
 
@@ -865,7 +911,14 @@ defmodule NimblePool do
               GenServer.reply({pid, ref}, worker_client_state)
 
               requests = Map.put(requests, ref, {pid, mon_ref, :state, worker_server_state})
-              %{state | resources: resources, requests: requests, state: pool_state}
+
+              %{
+                state
+                | resources: resources,
+                  requests: requests,
+                  state: pool_state,
+                  last_activity_ts: System.monotonic_time(:millisecond)
+              }
 
             {:remove, reason, pool_state} ->
               state = remove_worker(reason, worker_server_state, %{state | state: pool_state})
@@ -921,6 +974,25 @@ defmodule NimblePool do
     else
       schedule_init()
       state
+    end
+  end
+
+  defp do_check_idle_pool(state) do
+    %{
+      worker: worker,
+      state: pool_state
+    } = state
+
+    if function_exported?(worker, :handle_ping, 1) do
+      case worker.handle_ping(pool_state) do
+        {:ok, pool_state} ->
+          {:ok, %{state | state: pool_state}}
+
+        {:stop, user_reason, new_state} ->
+          {:stop, user_reason, %{state | state: new_state}}
+      end
+    else
+      {:ok, state}
     end
   end
 

@@ -100,6 +100,10 @@ defmodule NimblePoolTest do
       TestAgent.next(pool_state, :handle_ping, [worker_state, pool_state])
     end
 
+    def handle_ping(pool_state) do
+      TestAgent.next(pool_state, :handle_ping, [pool_state])
+    end
+
     def terminate_worker(reason, worker_state, pid) do
       TestAgent.next(pid, :terminate_worker, [reason, worker_state, pid])
     end
@@ -1395,7 +1399,7 @@ defmodule NimblePoolTest do
     end
   end
 
-  describe "handle_ping" do
+  describe "handle_ping/2" do
     test "ping only idle workers" do
       parent = self()
 
@@ -1655,6 +1659,145 @@ defmodule NimblePoolTest do
       assert_receive(:pong)
 
       assert_receive {:DOWN, _, :process, ^pool, {:shutdown, :some_reason}}
+    end
+  end
+
+  describe "handle_ping/1" do
+    test "ping pool and terminate after timeout" do
+      parent = self()
+
+      stateful_pool!(
+        [
+          init_worker: fn next -> {:ok, :worker1, next} end,
+          init_worker: fn next -> {:ok, :worker2, next} end,
+          init_worker: fn next -> {:ok, :worker3, next} end,
+          handle_ping: fn pool_state ->
+            send(parent, :ping_pool_idle)
+            {:stop, :my_reason, pool_state}
+          end,
+          terminate_worker: fn _reason, _, state -> {:ok, state} end,
+          terminate_worker: fn _reason, _, state -> {:ok, state} end,
+          terminate_worker: fn _reason, _, state -> {:ok, state} end,
+          terminate_pool: fn reason, _state ->
+            send(parent, {:terminated_pool, reason})
+            :ok
+          end
+        ],
+        pool_size: 3,
+        pool_idle_timeout: 5
+      )
+
+      assert_receive(:ping_pool_idle)
+      assert_receive({:terminated_pool, {:shutdown, :my_reason}})
+    end
+
+    test "ping pool and terminate after 3x timeout" do
+      parent = self()
+
+      stateful_pool!(
+        [
+          init_worker: fn next -> {:ok, :worker1, next} end,
+          init_worker: fn next -> {:ok, :worker2, next} end,
+          init_worker: fn next -> {:ok, :worker3, next} end,
+          handle_ping: fn pool_state ->
+            send(parent, :ping_pool_idle_1)
+            {:ok, pool_state}
+          end,
+          handle_ping: fn pool_state ->
+            send(parent, :ping_pool_idle_2)
+            {:ok, pool_state}
+          end,
+          handle_ping: fn pool_state ->
+            send(parent, :ping_pool_idle_3)
+            {:stop, :my_reason, pool_state}
+          end,
+          terminate_worker: fn _reason, _, state -> {:ok, state} end,
+          terminate_worker: fn _reason, _, state -> {:ok, state} end,
+          terminate_worker: fn _reason, _, state -> {:ok, state} end,
+          terminate_pool: fn reason, _state ->
+            send(parent, {:terminated_pool, reason})
+            :ok
+          end
+        ],
+        pool_size: 3,
+        pool_idle_timeout: 10
+      )
+
+      assert_receive :ping_pool_idle_1, 20
+      assert_receive :ping_pool_idle_2, 20
+      assert_receive :ping_pool_idle_3, 20
+
+      assert_receive({:terminated_pool, {:shutdown, :my_reason}})
+    end
+
+    test "do not call if pool is not idle" do
+      parent = self()
+
+      {_, pool} =
+        stateful_pool!(
+          [
+            init_worker: fn next ->
+              send(parent, {:pool_started, System.monotonic_time(:millisecond)})
+              {:ok, :worker1, next}
+            end,
+            init_worker: fn next -> {:ok, :worker2, next} end,
+            init_worker: fn next -> {:ok, :worker3, next} end,
+            handle_checkout: fn :checkout, _from, worker_state, pool_state ->
+              {:ok, :client_state_out, worker_state, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, worker_state, pool_state ->
+              {:ok, worker_state, pool_state}
+            end,
+            handle_checkout: fn :checkout, _from, worker_state, pool_state ->
+              {:ok, :client_state_out, worker_state, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, worker_state, pool_state ->
+              {:ok, worker_state, pool_state}
+            end,
+            handle_checkout: fn :checkout, _from, worker_state, pool_state ->
+              {:ok, :client_state_out, worker_state, pool_state}
+            end,
+            handle_checkin: fn :client_state_in, _from, worker_state, pool_state ->
+              {:ok, worker_state, pool_state}
+            end,
+            handle_ping: fn pool_state ->
+              send(parent, {:ping_pool_idle, System.monotonic_time(:millisecond)})
+              {:stop, :my_reason, pool_state}
+            end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            terminate_pool: fn reason, _state ->
+              send(parent, {:terminated_pool, reason})
+              :ok
+            end
+          ],
+          pool_size: 3,
+          pool_idle_timeout: 10
+        )
+
+      assert_receive {:pool_started, started_ts}
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               Process.sleep(5)
+               {:result, :client_state_in}
+             end) == :result
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               Process.sleep(5)
+               {:result, :client_state_in}
+             end) == :result
+
+      assert NimblePool.checkout!(pool, :checkout, fn _ref, :client_state_out ->
+               Process.sleep(5)
+               {:result, :client_state_in}
+             end) == :result
+
+      assert_receive({:ping_pool_idle, idle_ts})
+
+      assert_receive({:terminated_pool, {:shutdown, :my_reason}})
+
+      assert idle_ts - started_ts > 30
     end
   end
 
