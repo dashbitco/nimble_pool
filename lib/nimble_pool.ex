@@ -295,7 +295,7 @@ defmodule NimblePool do
   @callback terminate_pool(
               reason :: :DOWN | :timeout | :throw | :error | :exit | user_reason,
               pool_state
-            ) :: :ok
+            ) :: term()
 
   @doc """
   Handle cancelled checkout requests.
