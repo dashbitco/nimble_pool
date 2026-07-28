@@ -281,7 +281,7 @@ defmodule NimblePool do
   @doc """
   Handle pool termination.
 
-  The `reason` argmument is the same given to GenServer's terminate/2 callback.
+  The `reason` argument is the same given to GenServer's terminate/2 callback.
 
   It is not necessary to terminate workers here because the
   `terminate_worker/3` callback has already been invoked.
