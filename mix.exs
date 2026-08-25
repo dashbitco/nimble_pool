@@ -29,7 +29,7 @@ defmodule NimblePool.MixProject do
 
   defp deps do
     [
-      {:ex_doc, "~> 0.31", only: :docs},
+      {:ex_doc, "~> 0.40.3", only: :docs},
       {:excoveralls, "~> 0.16.1", only: :test}
     ]
   end
