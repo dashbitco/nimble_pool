@@ -790,7 +790,8 @@ defmodule NimblePool do
         end
 
         state = remove_request(state, ref, mon_ref)
-        {:noreply, remove_worker(reason, worker_server_state, state)}
+        state = remove_worker(reason, worker_server_state, state)
+        {:noreply, maybe_checkout(state)}
 
       # The client timed out, sent us a message, and we dropped the deadlined request
       %{} ->

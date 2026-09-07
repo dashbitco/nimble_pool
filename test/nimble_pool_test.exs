@@ -1557,7 +1557,7 @@ defmodule NimblePoolTest do
 
       assert_receive(:pong)
 
-      assert_received {:terminate, :some_reason}
+      assert_receive {:terminate, :some_reason}
       refute_received({:DOWN, _, :process, ^pool, {:shutdown, :some_reason}})
     end
 
