@@ -261,7 +261,8 @@ defmodule NimblePool do
   ## Disclaimers
 
     * On lazy pools, if no worker is currently on the pool the callback will never be called.
-      Therefore you can not rely on this callback to terminate empty lazy pools.
+      Therefore you can not rely on this callback to terminate empty lazy pools. Use
+      `c:handle_pool_info/2` with `pool_send_after/3` instead.
 
     * On not lazy pools, if you return `{:remove, user_reason}` you may end up
       terminating and initializing workers at the same time every idle verification cycle.
@@ -310,13 +311,99 @@ defmodule NimblePool do
   * `:checked_out` means the cancellation happened after resource checkout. This may happen
   when the function given to `checkout!/4` raises.
 
+  It must return `:ok` or `{:ok, pool_state}` with the updated pool state. A `:checked_out`
+  cancellation does not call `c:handle_checkin/4`, so this is the place to undo pool state
+  that `c:handle_checkout/4` changed, such as a count of checked out workers.
+
   This callback is optional.
   """
   @doc callback: :pool
   @callback handle_cancelled(
               context :: :queued | :checked_out,
               pool_state
-            ) :: :ok
+            ) :: :ok | {:ok, pool_state}
+
+  @doc """
+  Handles a message sent to the pool with `pool_send/2` or `pool_send_after/3`.
+
+  Unlike `c:handle_info/2`, which runs once for every worker in the pool, this callback
+  runs once for the pool and receives the pool state. Messages sent with `pool_send/2`
+  and `pool_send_after/3` never reach `c:handle_info/2`.
+
+  It must return one of:
+
+    * `{:noreply, pool_state}` - updates the pool state.
+
+    * `{:noreply, pool_state, :hibernate}` - updates the pool state and hibernates the
+      pool process, as in `c:GenServer.handle_info/2`.
+
+    * `{:stop, reason, pool_state}` - stops the pool with `reason`. As on any other pool
+      exit, `c:terminate_worker/3` runs for every checked in worker and then
+      `c:terminate_pool/2` runs. Use `{:shutdown, term}` as the reason for an expected
+      stop, so a supervisor does not report it as a crash.
+
+  > #### Blocking the pool {: .warning}
+  >
+  > This callback is synchronous and therefore will block the pool.
+  > Avoid performing long work in here.
+
+  This callback is optional. A pool whose worker module does not implement it
+  crashes when it receives a message sent with `pool_send/2` or `pool_send_after/3`.
+
+  ## Examples
+
+  The pool below stops once no worker has been checked out for `idle_timeout`
+  milliseconds. Unlike `c:handle_ping/2`, the check runs even when the pool has
+  no workers.
+
+      @impl NimblePool
+      def init_pool(idle_timeout) do
+        NimblePool.pool_send_after(self(), :check_idle, idle_timeout)
+        {:ok, %{idle_timeout: idle_timeout, checked_out: 0, last_checkout: now()}}
+      end
+
+      @impl NimblePool
+      def handle_checkout(:checkout, _from, worker, pool_state) do
+        pool_state = %{pool_state | checked_out: pool_state.checked_out + 1, last_checkout: now()}
+        {:ok, worker, worker, pool_state}
+      end
+
+      @impl NimblePool
+      def handle_checkin(worker, _from, _old_worker, pool_state) do
+        {:ok, worker, %{pool_state | checked_out: pool_state.checked_out - 1}}
+      end
+
+      @impl NimblePool
+      def handle_cancelled(:checked_out, pool_state) do
+        {:ok, %{pool_state | checked_out: pool_state.checked_out - 1}}
+      end
+
+      def handle_cancelled(:queued, pool_state), do: {:ok, pool_state}
+
+      @impl NimblePool
+      def handle_pool_info(:check_idle, pool_state) do
+        idle? = now() - pool_state.last_checkout >= pool_state.idle_timeout
+
+        if pool_state.checked_out == 0 and idle? do
+          {:stop, {:shutdown, :idle_timeout}, pool_state}
+        else
+          NimblePool.pool_send_after(self(), :check_idle, pool_state.idle_timeout)
+          {:noreply, pool_state}
+        end
+      end
+
+      defp now, do: System.monotonic_time(:millisecond)
+
+  A checkout request may already be waiting in the pool's message queue when the
+  pool stops, and that caller then exits. If callers find the pool through a
+  registry, you can avoid this by unregistering the pool first and stopping it
+  in a later message, sent with `pool_send_after/3`.
+  """
+  @doc callback: :pool
+  @callback handle_pool_info(message :: term, pool_state) ::
+              {:noreply, pool_state}
+              | {:noreply, pool_state, :hibernate}
+              | {:stop, reason :: term, pool_state}
 
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
@@ -326,7 +413,8 @@ defmodule NimblePool do
                       handle_ping: 2,
                       terminate_worker: 3,
                       terminate_pool: 2,
-                      handle_cancelled: 2
+                      handle_cancelled: 2,
+                      handle_pool_info: 2
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -499,6 +587,46 @@ defmodule NimblePool do
     :ok
   end
 
+  @doc """
+  Sends `message` to the pool, where `c:handle_pool_info/2` handles it.
+
+  It returns `:ok` even if the pool is not running, like `GenServer.cast/2`.
+
+  ## Examples
+
+      NimblePool.pool_send(pool, :check_idle)
+      #=> :ok
+
+  """
+  @spec pool_send(pool, message :: term) :: :ok
+  def pool_send(pool, message) do
+    case GenServer.whereis(pool) do
+      nil -> :ok
+      dest -> send(dest, {__MODULE__, :pool_info, message})
+    end
+
+    :ok
+  end
+
+  @doc """
+  Sends `message` to the pool after `time` milliseconds, where `c:handle_pool_info/2`
+  handles it.
+
+  `pool` is a pid or a locally registered name, as in `Process.send_after/3`. It
+  returns the timer reference, which `Process.cancel_timer/1` accepts.
+
+  Inside the pool callbacks, use `self()` as the `pool`.
+
+  ## Examples
+
+      NimblePool.pool_send_after(self(), :check_idle, 1_000)
+
+  """
+  @spec pool_send_after(pid | atom, message :: term, non_neg_integer) :: reference
+  def pool_send_after(pool, message, time) when is_pid(pool) or is_atom(pool) do
+    Process.send_after(pool, {__MODULE__, :pool_info, message}, time)
+  end
+
   defp deadline(timeout) when is_integer(timeout) do
     System.monotonic_time() + System.convert_time_unit(timeout, :millisecond, :native)
   end
@@ -650,6 +778,35 @@ defmodule NimblePool do
   end
 
   @impl true
+  def handle_info({__MODULE__, :pool_info, message}, state) do
+    %{worker: worker, state: pool_state} = state
+
+    case worker.handle_pool_info(message, pool_state) do
+      {:noreply, pool_state} ->
+        {:noreply, %{state | state: pool_state}}
+
+      {:noreply, pool_state, :hibernate} ->
+        {:noreply, %{state | state: pool_state}, :hibernate}
+
+      {:stop, reason, pool_state} ->
+        {:stop, reason, %{state | state: pool_state}}
+
+      other ->
+        raise """
+        unexpected return from #{inspect(worker)}.handle_pool_info/2.
+
+        Expected:
+
+            {:noreply, pool_state}
+            | {:noreply, pool_state, :hibernate}
+            | {:stop, reason, pool_state}
+
+        Got: #{inspect(other)}
+        """
+    end
+  end
+
+  @impl true
   def handle_info({__MODULE__, :init_worker}, state) do
     %{
       async: async,
@@ -767,40 +924,35 @@ defmodule NimblePool do
     {:noreply, %{state | resources: resources, async: async, state: pool_state}}
   end
 
-  defp cancel_request_ref(
-         ref,
-         reason,
-         %{requests: requests, worker: worker, state: pool_state} = state
-       ) do
+  defp cancel_request_ref(ref, reason, %{requests: requests} = state) do
     case requests do
       # Exited or timed out before we could serve it
       %{^ref => {_, mon_ref, :command, _command, _deadline}} ->
-        if function_exported?(worker, :handle_cancelled, 2) do
-          args = [:queued, pool_state]
-          apply_worker_callback(worker, :handle_cancelled, args)
-        end
-
+        state = maybe_handle_cancelled(:queued, state)
         {:noreply, remove_request(state, ref, mon_ref)}
 
       # Exited or errored during client processing
       %{^ref => {_, mon_ref, :state, worker_server_state}} ->
-        if function_exported?(worker, :handle_cancelled, 2) do
-          args = [:checked_out, pool_state]
-          apply_worker_callback(worker, :handle_cancelled, args)
-        end
-
+        state = maybe_handle_cancelled(:checked_out, state)
         state = remove_request(state, ref, mon_ref)
         state = remove_worker(reason, worker_server_state, state)
         {:noreply, maybe_checkout(state)}
 
       # The client timed out, sent us a message, and we dropped the deadlined request
       %{} ->
-        if function_exported?(worker, :handle_cancelled, 2) do
-          args = [:queued, pool_state]
-          apply_worker_callback(worker, :handle_cancelled, args)
-        end
+        {:noreply, maybe_handle_cancelled(:queued, state)}
+    end
+  end
 
-        {:noreply, state}
+  defp maybe_handle_cancelled(context, %{worker: worker, state: pool_state} = state) do
+    if function_exported?(worker, :handle_cancelled, 2) do
+      case apply_worker_callback(worker, :handle_cancelled, [context, pool_state]) do
+        {:ok, pool_state} -> %{state | state: pool_state}
+        # :ok keeps the pool state, and so does a callback that raised
+        _ -> state
+      end
+    else
+      state
     end
   end
 
