@@ -116,6 +116,10 @@ defmodule NimblePoolTest do
     def handle_pool_cast(message, pool_state) do
       TestAgent.next(pool_state, :handle_pool_cast, [message, pool_state])
     end
+
+    def handle_pool_call(message, from, pool_state) do
+      TestAgent.next(pool_state, :handle_pool_call, [message, from, pool_state])
+    end
   end
 
   defp stateless_pool!(instructions, opts \\ []) do
@@ -1966,6 +1970,21 @@ defmodule NimblePoolTest do
 
       assert_receive {:EXIT, ^pool, {:shutdown, :idle}}, 2_000
       assert System.monotonic_time(:millisecond) - checkout_requested_ms >= 1_000
+    end
+  end
+
+  describe "handle_pool_call" do
+    test "replies to the caller" do
+      {agent, pool} =
+        stateful_pool!(
+          [handle_pool_call: fn :ping, _from, pool_state -> {:reply, :pong, pool_state} end],
+          lazy: true
+        )
+
+      assert NimblePool.pool_call(pool, :ping) == :pong
+
+      NimblePool.stop(pool, :shutdown)
+      assert_drained agent
     end
   end
 end

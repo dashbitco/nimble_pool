@@ -326,6 +326,9 @@ defmodule NimblePool do
   @doc """
   Handles a message cast to the pool with `pool_cast/2` or `pool_cast_after/3`.
 
+  It works like `c:GenServer.handle_cast/2`, but only for messages sent with
+  `pool_cast/2` or `pool_cast_after/3`, not with `GenServer.cast/2`.
+
   Unlike `c:handle_info/2`, which runs once for every worker in the pool, this callback
   runs once for the pool and receives the pool state. Casts never reach `c:handle_info/2`.
 
@@ -404,6 +407,81 @@ defmodule NimblePool do
               | {:noreply, pool_state, :hibernate}
               | {:stop, reason :: term, pool_state}
 
+  @doc """
+  Handles a message sent to the pool with `pool_call/3` and replies to the caller.
+
+  It works like `c:GenServer.handle_call/3`, but only for messages sent with
+  `pool_call/3`, not with `GenServer.call/3`.
+
+  Unlike `c:handle_info/2`, which runs once for every worker in the pool, this callback
+  runs once for the pool and receives the pool state. `from` identifies the caller, and
+  `GenServer.reply/2` accepts it.
+
+  It must return one of:
+
+    * `{:reply, reply, pool_state}` - replies with `reply` and updates the pool state.
+
+    * `{:reply, reply, pool_state, :hibernate}` - replies with `reply`, updates the pool
+      state and hibernates the pool process, as in `c:GenServer.handle_call/3`.
+
+    * `{:noreply, pool_state}` - updates the pool state without replying. Reply later
+      with `GenServer.reply/2`.
+
+    * `{:noreply, pool_state, :hibernate}` - updates the pool state without replying
+      and hibernates the pool process.
+
+    * `{:stop, reason, reply, pool_state}` - replies with `reply` and stops the pool
+      with `reason`.
+
+    * `{:stop, reason, pool_state}` - stops the pool with `reason` without replying.
+      The caller then exits with `reason`.
+
+  When the pool stops, `c:terminate_worker/3` runs for every checked in worker and then
+  `c:terminate_pool/2` runs, as on any other pool exit. Use `{:shutdown, term}` as the
+  reason for an expected stop, so a supervisor does not report it as a crash.
+
+  > #### Blocking the pool {: .warning}
+  >
+  > This callback is synchronous and therefore will block the pool.
+  > Avoid performing long work in here.
+
+  This callback is optional. A pool whose worker module does not implement it
+  crashes when it receives a call.
+
+  ## Examples
+
+  The pool below counts its checkouts and replies with the count when asked:
+
+      @impl NimblePool
+      def init_pool(_arg) do
+        {:ok, %{checkouts: 0}}
+      end
+
+      @impl NimblePool
+      def handle_checkout(:checkout, _from, worker, pool_state) do
+        {:ok, worker, worker, %{pool_state | checkouts: pool_state.checkouts + 1}}
+      end
+
+      @impl NimblePool
+      def handle_pool_call(:checkouts, _from, pool_state) do
+        {:reply, pool_state.checkouts, pool_state}
+      end
+
+  Any process can then ask the pool:
+
+      NimblePool.pool_call(pool, :checkouts)
+      #=> 3
+
+  """
+  @doc callback: :pool
+  @callback handle_pool_call(message :: term, from :: GenServer.from(), pool_state) ::
+              {:reply, reply :: term, pool_state}
+              | {:reply, reply :: term, pool_state, :hibernate}
+              | {:noreply, pool_state}
+              | {:noreply, pool_state, :hibernate}
+              | {:stop, reason :: term, reply :: term, pool_state}
+              | {:stop, reason :: term, pool_state}
+
   @optional_callbacks init_pool: 1,
                       handle_checkin: 4,
                       handle_info: 2,
@@ -413,7 +491,8 @@ defmodule NimblePool do
                       terminate_worker: 3,
                       terminate_pool: 2,
                       handle_cancelled: 2,
-                      handle_pool_cast: 2
+                      handle_pool_cast: 2,
+                      handle_pool_call: 3
 
   @doc """
   Defines a pool to be started under the supervision tree.
@@ -600,7 +679,7 @@ defmodule NimblePool do
   """
   @spec pool_cast(pool, message :: term) :: :ok
   def pool_cast(pool, message) do
-    GenServer.cast(pool, message)
+    GenServer.cast(pool, {__MODULE__, :cast, message})
   end
 
   @doc """
@@ -620,6 +699,23 @@ defmodule NimblePool do
   @spec pool_cast_after(pid | atom, message :: term, non_neg_integer) :: reference
   def pool_cast_after(pool, message, time) when is_pid(pool) or is_atom(pool) do
     Process.send_after(pool, {__MODULE__, :cast, message}, time)
+  end
+
+  @doc """
+  Sends `message` to the pool and waits for the reply from `c:handle_pool_call/3`.
+
+  It exits like `GenServer.call/3` when the pool is not running or does not reply
+  within `timeout` milliseconds.
+
+  ## Examples
+
+      NimblePool.pool_call(pool, :checked_out)
+      #=> 0
+
+  """
+  @spec pool_call(pool, message :: term, timeout) :: term
+  def pool_call(pool, message, timeout \\ 5_000) do
+    GenServer.call(pool, {__MODULE__, :call, message}, timeout)
   end
 
   defp deadline(timeout) when is_integer(timeout) do
@@ -713,8 +809,12 @@ defmodule NimblePool do
     end
   end
 
+  def handle_call({__MODULE__, :call, message}, from, state) do
+    do_handle_pool_call(message, from, state)
+  end
+
   @impl true
-  def handle_cast(message, state) do
+  def handle_cast({__MODULE__, :cast, message}, state) do
     do_handle_pool_cast(message, state)
   end
 
@@ -901,6 +1001,44 @@ defmodule NimblePool do
 
             {:noreply, pool_state}
             | {:noreply, pool_state, :hibernate}
+            | {:stop, reason, pool_state}
+
+        Got: #{inspect(other)}
+        """
+    end
+  end
+
+  defp do_handle_pool_call(message, from, %{worker: worker, state: pool_state} = state) do
+    case worker.handle_pool_call(message, from, pool_state) do
+      {:reply, reply, pool_state} ->
+        {:reply, reply, %{state | state: pool_state}}
+
+      {:reply, reply, pool_state, :hibernate} ->
+        {:reply, reply, %{state | state: pool_state}, :hibernate}
+
+      {:noreply, pool_state} ->
+        {:noreply, %{state | state: pool_state}}
+
+      {:noreply, pool_state, :hibernate} ->
+        {:noreply, %{state | state: pool_state}, :hibernate}
+
+      {:stop, reason, reply, pool_state} ->
+        {:stop, reason, reply, %{state | state: pool_state}}
+
+      {:stop, reason, pool_state} ->
+        {:stop, reason, %{state | state: pool_state}}
+
+      other ->
+        raise """
+        unexpected return from #{inspect(worker)}.handle_pool_call/3.
+
+        Expected:
+
+            {:reply, reply, pool_state}
+            | {:reply, reply, pool_state, :hibernate}
+            | {:noreply, pool_state}
+            | {:noreply, pool_state, :hibernate}
+            | {:stop, reason, reply, pool_state}
             | {:stop, reason, pool_state}
 
         Got: #{inspect(other)}
