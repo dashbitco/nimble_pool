@@ -113,8 +113,8 @@ defmodule NimblePoolTest do
       TestAgent.next(pool_state, :handle_cancelled, [context, pool_state])
     end
 
-    def handle_pool_info(message, pool_state) do
-      TestAgent.next(pool_state, :handle_pool_info, [message, pool_state])
+    def handle_pool_cast(message, pool_state) do
+      TestAgent.next(pool_state, :handle_pool_cast, [message, pool_state])
     end
   end
 
@@ -1886,12 +1886,12 @@ defmodule NimblePoolTest do
     end
   end
 
-  describe "handle_pool_info" do
+  describe "handle_pool_cast" do
     test "terminates an empty pool" do
       {agent, pool} =
         stateful_pool!(
           [
-            handle_pool_info: fn :terminate, pool_state ->
+            handle_pool_cast: fn :terminate, pool_state ->
               {:stop, {:shutdown, :idle}, pool_state}
             end
           ],
@@ -1899,7 +1899,7 @@ defmodule NimblePoolTest do
         )
 
       ref = Process.monitor(pool)
-      NimblePool.pool_send(pool, :terminate)
+      NimblePool.pool_cast(pool, :terminate)
 
       assert_receive {:DOWN, ^ref, :process, ^pool, {:shutdown, :idle}}
       assert_drained agent
@@ -1915,7 +1915,7 @@ defmodule NimblePoolTest do
         defp now_ms, do: System.monotonic_time(:millisecond)
 
         def init_pool(parent) do
-          NimblePool.pool_send_after(self(), :check_idle, @check_interval)
+          NimblePool.pool_cast_after(self(), :check_idle, @check_interval)
           {:ok, %{parent: parent, checked_out: 0, last_checkout_ms: now_ms()}}
         end
 
@@ -1931,14 +1931,14 @@ defmodule NimblePoolTest do
           {:ok, worker, %{pool_state | checked_out: pool_state.checked_out - 1}}
         end
 
-        def handle_pool_info(:check_idle, pool_state) do
+        def handle_pool_cast(:check_idle, pool_state) do
           idle_ms = now_ms() - pool_state.last_checkout_ms
 
           if pool_state.checked_out == 0 and idle_ms >= @idle_timeout do
             {:stop, {:shutdown, :idle}, pool_state}
           else
             send(pool_state.parent, :busy)
-            NimblePool.pool_send_after(self(), :check_idle, @check_interval)
+            NimblePool.pool_cast_after(self(), :check_idle, @check_interval)
             {:noreply, pool_state}
           end
         end
