@@ -262,7 +262,7 @@ defmodule NimblePool do
 
     * On lazy pools, if no worker is currently on the pool the callback will never be called.
       Therefore you can not rely on this callback to terminate empty lazy pools. Use
-      `c:handle_pool_cast/2` with `pool_cast_after/3` instead.
+      `c:handle_pool_cast/2` or `c:handle_pool_call/3` instead.
 
     * On not lazy pools, if you return `{:remove, user_reason}` you may end up
       terminating and initializing workers at the same time every idle verification cycle.
@@ -324,10 +324,10 @@ defmodule NimblePool do
             ) :: :ok | {:ok, pool_state}
 
   @doc """
-  Handles a message cast to the pool with `pool_cast/2` or `pool_cast_after/3`.
+  Handles a message cast to the pool with `cast/2` or `cast_after/3`.
 
   It works like `c:GenServer.handle_cast/2`, but only for messages sent with
-  `pool_cast/2` or `pool_cast_after/3`, not with `GenServer.cast/2`.
+  `cast/2` or `cast_after/3`, not with `GenServer.cast/2`.
 
   Unlike `c:handle_info/2`, which runs once for every worker in the pool, this callback
   runs once for the pool and receives the pool state. Casts never reach `c:handle_info/2`.
@@ -354,13 +354,12 @@ defmodule NimblePool do
 
   ## Examples
 
-  The pool below stops once no worker has been checked out for `idle_timeout`
-  milliseconds. Unlike `c:handle_ping/2`, the check runs even when the pool has
-  no workers.
+  The pool below stops once no workers are checked out and no checkout has occurred
+  for `idle_timeout` milliseconds.
 
       @impl NimblePool
       def init_pool(idle_timeout) do
-        NimblePool.pool_cast_after(self(), :check_idle, idle_timeout)
+        NimblePool.cast_after(self(), :check_idle, idle_timeout)
         {:ok, %{idle_timeout: idle_timeout, checked_out: 0, last_checkout: now()}}
       end
 
@@ -389,7 +388,7 @@ defmodule NimblePool do
         if pool_state.checked_out == 0 and idle? do
           {:stop, {:shutdown, :idle_timeout}, pool_state}
         else
-          NimblePool.pool_cast_after(self(), :check_idle, pool_state.idle_timeout)
+          NimblePool.cast_after(self(), :check_idle, pool_state.idle_timeout)
           {:noreply, pool_state}
         end
       end
@@ -399,7 +398,7 @@ defmodule NimblePool do
   A checkout request may already be waiting in the pool's message queue when the
   pool stops, and that caller then exits. If callers find the pool through a
   registry, you can avoid this by unregistering the pool first and stopping it
-  in a later cast, sent with `pool_cast_after/3`.
+  in a later cast, sent with `cast_after/3`.
   """
   @doc callback: :pool
   @callback handle_pool_cast(message :: term, pool_state) ::
@@ -408,10 +407,10 @@ defmodule NimblePool do
               | {:stop, reason :: term, pool_state}
 
   @doc """
-  Handles a message sent to the pool with `pool_call/3` and replies to the caller.
+  Handles a message sent to the pool with `call/3` and replies to the caller.
 
   It works like `c:GenServer.handle_call/3`, but only for messages sent with
-  `pool_call/3`, not with `GenServer.call/3`.
+  `call/3`, not with `GenServer.call/3`.
 
   Unlike `c:handle_info/2`, which runs once for every worker in the pool, this callback
   runs once for the pool and receives the pool state. `from` identifies the caller, and
@@ -469,7 +468,7 @@ defmodule NimblePool do
 
   Any process can then ask the pool:
 
-      NimblePool.pool_call(pool, :checkouts)
+      NimblePool.call(pool, :checkouts)
       #=> 3
 
   """
@@ -673,12 +672,12 @@ defmodule NimblePool do
 
   ## Examples
 
-      NimblePool.pool_cast(pool, :check_idle)
+      NimblePool.cast(pool, :check_idle)
       #=> :ok
 
   """
-  @spec pool_cast(pool, message :: term) :: :ok
-  def pool_cast(pool, message) do
+  @spec cast(pool, message :: term) :: :ok
+  def cast(pool, message) do
     GenServer.cast(pool, {__MODULE__, :cast, message})
   end
 
@@ -693,11 +692,11 @@ defmodule NimblePool do
 
   ## Examples
 
-      NimblePool.pool_cast_after(self(), :check_idle, 1_000)
+      NimblePool.cast_after(self(), :check_idle, 1_000)
 
   """
-  @spec pool_cast_after(pid | atom, message :: term, non_neg_integer) :: reference
-  def pool_cast_after(pool, message, time) when is_pid(pool) or is_atom(pool) do
+  @spec cast_after(pid | atom, message :: term, non_neg_integer) :: reference
+  def cast_after(pool, message, time) when is_pid(pool) or is_atom(pool) do
     Process.send_after(pool, {__MODULE__, :cast, message}, time)
   end
 
@@ -709,12 +708,12 @@ defmodule NimblePool do
 
   ## Examples
 
-      NimblePool.pool_call(pool, :checked_out)
+      NimblePool.call(pool, :checked_out)
       #=> 0
 
   """
-  @spec pool_call(pool, message :: term, timeout) :: term
-  def pool_call(pool, message, timeout \\ 5_000) do
+  @spec call(pool, message :: term, timeout) :: term
+  def call(pool, message, timeout \\ 5_000) do
     GenServer.call(pool, {__MODULE__, :call, message}, timeout)
   end
 

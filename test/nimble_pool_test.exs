@@ -1903,7 +1903,7 @@ defmodule NimblePoolTest do
         )
 
       ref = Process.monitor(pool)
-      NimblePool.pool_cast(pool, :terminate)
+      NimblePool.cast(pool, :terminate)
 
       assert_receive {:DOWN, ^ref, :process, ^pool, {:shutdown, :idle}}
       assert_drained agent
@@ -1919,7 +1919,7 @@ defmodule NimblePoolTest do
         defp now_ms, do: System.monotonic_time(:millisecond)
 
         def init_pool(parent) do
-          NimblePool.pool_cast_after(self(), :check_idle, @check_interval)
+          NimblePool.cast_after(self(), :check_idle, @check_interval)
           {:ok, %{parent: parent, checked_out: 0, last_checkout_ms: now_ms()}}
         end
 
@@ -1942,7 +1942,7 @@ defmodule NimblePoolTest do
             {:stop, {:shutdown, :idle}, pool_state}
           else
             send(pool_state.parent, :busy)
-            NimblePool.pool_cast_after(self(), :check_idle, @check_interval)
+            NimblePool.cast_after(self(), :check_idle, @check_interval)
             {:noreply, pool_state}
           end
         end
@@ -1981,7 +1981,7 @@ defmodule NimblePoolTest do
           lazy: true
         )
 
-      assert NimblePool.pool_call(pool, :ping) == :pong
+      assert NimblePool.call(pool, :ping) == :pong
 
       NimblePool.stop(pool, :shutdown)
       assert_drained agent
