@@ -112,6 +112,14 @@ defmodule NimblePoolTest do
     def handle_cancelled(context, pool_state) do
       TestAgent.next(pool_state, :handle_cancelled, [context, pool_state])
     end
+
+    def handle_pool_cast(message, pool_state) do
+      TestAgent.next(pool_state, :handle_pool_cast, [message, pool_state])
+    end
+
+    def handle_pool_call(message, from, pool_state) do
+      TestAgent.next(pool_state, :handle_pool_call, [message, from, pool_state])
+    end
   end
 
   defp stateless_pool!(instructions, opts \\ []) do
@@ -1760,6 +1768,11 @@ defmodule NimblePoolTest do
               send(parent, :ping)
               :ok
             end,
+            terminate_worker: fn _reason, _, state -> {:ok, state} end,
+            init_worker: fn next ->
+              send(parent, :restarted)
+              {:ok, :worker2, next}
+            end,
             terminate_worker: fn _reason, _, state -> {:ok, state} end
           ],
           pool_size: 1
@@ -1775,6 +1788,7 @@ defmodule NimblePoolTest do
       )
 
       assert_receive(:ping)
+      assert_receive(:restarted)
 
       NimblePool.stop(pool, :shutdown)
     end
@@ -1823,6 +1837,7 @@ defmodule NimblePoolTest do
                )
 
       send(task1.pid, :release)
+      assert Task.await(task1) == :result
 
       assert_receive(:ping)
 
@@ -1872,6 +1887,104 @@ defmodule NimblePoolTest do
              end) == :result
 
       NimblePool.stop(pool, :shutdown)
+    end
+  end
+
+  describe "handle_pool_cast" do
+    test "terminates an empty pool" do
+      {agent, pool} =
+        stateful_pool!(
+          [
+            handle_pool_cast: fn :terminate, pool_state ->
+              {:stop, {:shutdown, :idle}, pool_state}
+            end
+          ],
+          lazy: true
+        )
+
+      ref = Process.monitor(pool)
+      NimblePool.cast(pool, :terminate)
+
+      assert_receive {:DOWN, ^ref, :process, ^pool, {:shutdown, :idle}}
+      assert_drained agent
+    end
+
+    test "terminates the pool once idle for 1 second" do
+      defmodule IdlePool do
+        @behaviour NimblePool
+
+        @check_interval 100
+        @idle_timeout 1_000
+
+        defp now_ms, do: System.monotonic_time(:millisecond)
+
+        def init_pool(parent) do
+          NimblePool.cast_after(self(), :check_idle, @check_interval)
+          {:ok, %{parent: parent, checked_out: 0, last_checkout_ms: now_ms()}}
+        end
+
+        def init_worker(pool_state), do: {:ok, :worker, pool_state}
+
+        def handle_checkout(:checkout, _from, worker, pool_state) do
+          checked_out = pool_state.checked_out + 1
+          pool_state = %{pool_state | checked_out: checked_out, last_checkout_ms: now_ms()}
+          {:ok, worker, worker, pool_state}
+        end
+
+        def handle_checkin(worker, _from, _old_worker, pool_state) do
+          {:ok, worker, %{pool_state | checked_out: pool_state.checked_out - 1}}
+        end
+
+        def handle_pool_cast(:check_idle, pool_state) do
+          idle_ms = now_ms() - pool_state.last_checkout_ms
+
+          if pool_state.checked_out == 0 and idle_ms >= @idle_timeout do
+            {:stop, {:shutdown, :idle}, pool_state}
+          else
+            send(pool_state.parent, :busy)
+            NimblePool.cast_after(self(), :check_idle, @check_interval)
+            {:noreply, pool_state}
+          end
+        end
+      end
+
+      Process.flag(:trap_exit, true)
+      parent = self()
+      {:ok, pool} = NimblePool.start_link(worker: {IdlePool, parent}, lazy: true)
+      checkout_requested_ms = System.monotonic_time(:millisecond)
+
+      holder =
+        Task.async(fn ->
+          NimblePool.checkout!(pool, :checkout, fn _from, worker ->
+            send(parent, :checked_out)
+            assert_receive :release, 1_000
+            {:ok, worker}
+          end)
+        end)
+
+      assert_receive :checked_out
+      assert_receive :busy, 500
+
+      send(holder.pid, :release)
+      assert Task.await(holder) == :ok
+
+      assert_receive {:EXIT, ^pool, {:shutdown, :idle}}, 2_000
+      assert System.monotonic_time(:millisecond) - checkout_requested_ms >= 1_000
+    end
+  end
+
+  describe "handle_pool_call" do
+    test "replies to the caller" do
+      {agent, pool} =
+        stateful_pool!(
+          [handle_pool_call: fn :ping, _from, pool_state -> {:reply, :pong, pool_state} end],
+          lazy: true
+        )
+
+      assert NimblePool.call(pool, :ping) == :pong
+
+      NimblePool.stop(pool, :shutdown)
+      assert_drained agent
     end
   end
 end
